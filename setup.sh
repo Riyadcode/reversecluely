@@ -20,7 +20,7 @@ WHISPER_COMMAND_PATH=""
 
 print_header() {
   echo "========================================"
-  echo " OpenCluely Setup"
+  echo " arlclue Setup"
   echo "========================================"
 }
 
@@ -34,14 +34,14 @@ This script will:
 3. Optionally set up local Whisper in ${WHISPER_VENV_DIR}
 4. Optionally install system audio dependencies
 5. Optionally build the app
-6. Optionally run OpenCluely
+6. Optionally run arlclue
 
 Options:
   --build                 Build a distributable for this OS
   --no-run                Do not start the app after setup
   --run                   Start the app after setup (default)
   --ci                    Use 'npm ci' instead of 'npm install'
-  --install-system-deps   Attempt to install sox where possible
+  --install-system-deps   Install sox + parec (Linux) for mic and system audio
   --skip-whisper          Skip local Whisper environment setup
   -h, --help              Show this help
 
@@ -174,31 +174,32 @@ install_system_deps() {
 
   echo "Attempting to install system audio dependencies"
 
-  if command -v sox >/dev/null 2>&1; then
-    echo "sox already installed"
-    return
-  fi
-
   case "$OS_NAME" in
     macos)
-      # OpenCluely captures microphone audio via the renderer (Web Audio API) on
-      # macOS, so the native sox/arecord recorders are not used. Skip installing
-      # sox to avoid an unnecessary Homebrew dependency.
+      # arlclue captures microphone audio via the renderer (Web Audio API) on
+      # macOS, so the native sox/arecord recorders are not used. Hearing the
+      # interviewer through earphones needs a virtual loopback device instead.
       echo "macOS uses built-in renderer audio capture; skipping sox install."
+      echo "To capture the interviewer's audio: brew install blackhole-2ch, then create a"
+      echo "Multi-Output Device (earphones + BlackHole) in Audio MIDI Setup."
       ;;
     linux)
-      if command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get update -y && sudo apt-get install -y sox || echo "Could not install sox via apt-get"
+      # sox/arecord record the microphone; parec (pulseaudio-utils, also works
+      # on PipeWire) records the system output for the interviewer's voice.
+      if command -v sox >/dev/null 2>&1 && command -v parec >/dev/null 2>&1; then
+        echo "sox and parec already installed"
+      elif command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -y && sudo apt-get install -y sox pulseaudio-utils || echo "Could not install sox/pulseaudio-utils via apt-get"
       elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y sox || echo "Could not install sox via dnf"
+        sudo dnf install -y sox pulseaudio-utils || echo "Could not install sox/pulseaudio-utils via dnf"
       elif command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --noconfirm sox || echo "Could not install sox via pacman"
+        sudo pacman -S --noconfirm sox libpulse || echo "Could not install sox/libpulse via pacman"
       else
-        echo "Unknown package manager. Install sox manually."
+        echo "Unknown package manager. Install sox and parec (pulseaudio-utils) manually."
       fi
       ;;
     windows)
-      echo "Install sox manually on Windows, for example via Chocolatey: choco install sox"
+      echo "Windows captures the microphone and system audio (loopback) without extra tools."
       ;;
     *)
       echo "Unknown OS. Install sox manually if you want microphone capture."

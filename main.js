@@ -1,7 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const { fileURLToPath } = require("url");
-const { app, BrowserWindow, globalShortcut, session, ipcMain } = require("electron");
+const { app, BrowserWindow, globalShortcut, session, ipcMain, desktopCapturer, dialog } = require("electron");
 
 // ── Resolve a stable .env location ──
 // In packaged builds process.cwd() is unstable and frequently read-only
@@ -55,7 +55,7 @@ function formatEnvValue(raw) {
 // exhaust the X11 client limit, producing "Maximum number of clients reached".
 //
 // Disabling hardware acceleration and the GPU subprocess forces Chromium to
-// render via the CPU (SwiftShader). OpenCluely's UI is light enough that
+// render via the CPU (SwiftShader). arlclue's UI is light enough that
 // this is imperceptible, and it eliminates the GPU crash entirely.
 if (process.platform === "linux") {
   app.disableHardwareAcceleration();
@@ -103,6 +103,8 @@ process.on("unhandledRejection", (reason) => {
 const captureService = require("./src/services/capture.service");
 const speechService = require("./src/services/speech.service");
 const llmService = require("./src/services/llm.service");
+const contextDocs = require("./src/services/context-docs.service");
+const { isLikelyQuestion, languageName } = require("./src/core/language");
 
 // Managers
 const windowManager = require("./src/managers/window.manager");
@@ -125,6 +127,7 @@ class ApplicationController {
     this._utteranceTimer = null;
     this._utteranceDispatchInFlight = false;
     this._utteranceCoalesceMs = 800;
+    this._utteranceLanguage = null;
 
     // First-run onboarding: detects missing .env / API key and triggers
     // a settings-window prompt on first launch so users don't have to
@@ -136,8 +139,16 @@ class ApplicationController {
       // any directory). ENV_PATH is the same file dotenv loaded at startup
       // and that persistEnvUpdates() writes to.
       envPath: ENV_PATH,
-      sentinelPath: path.join(app.getPath("userData"), ".opencluely-firstrun-completed"),
+      sentinelPath: path.join(app.getPath("userData"), ".arlclue-firstrun-completed"),
     });
+    // Resume, job description and notes loaded before the interview. Resolved
+    // here, before onAppReady renames the app for stealth, so the folder
+    // stays under the real userData directory.
+    try {
+      contextDocs.init(path.join(app.getPath("userData"), "prep-documents"));
+    } catch (error) {
+      logger.error("Failed to initialise prep documents", { error: error.message });
+    }
     // Lazily-initialised in getWhisperInstaller() so tests can mock
     // the constructor without polluting main-process startup.
     this._whisperInstaller = null;
@@ -145,7 +156,7 @@ class ApplicationController {
 
     // Window configurations for reference
     this.windowConfigs = {
-      main: { title: "OpenCluely" },
+      main: { title: "arlclue" },
       chat: { title: "Chat" },
       llmResponse: { title: "AI Response" },
       settings: { title: "Settings" },
@@ -386,6 +397,36 @@ class ApplicationController {
         callback(granted);
       }
     );
+
+    // System audio ("hear the interviewer through my headphones"). The main
+    // overlay calls getDisplayMedia() only to obtain the loopback audio track;
+    // the screen video track it must also request is stopped immediately.
+    // Electron 29 supports loopback audio on Windows only; macOS and Linux
+    // use a virtual device / the Pulse monitor instead (see main-window.js
+    // and system-audio.service.js).
+    if (typeof appSession.setDisplayMediaRequestHandler === "function") {
+      appSession.setDisplayMediaRequestHandler((request, callback) => {
+        const origin = String(request.securityOrigin || (request.frame && request.frame.url) || "");
+        if (!origin.startsWith("file://")) {
+          callback({});
+          return;
+        }
+        desktopCapturer.getSources({ types: ["screen"] }).then((sources) => {
+          if (!sources.length) {
+            callback({});
+            return;
+          }
+          const streams = { video: sources[0] };
+          if (request.audioRequested && process.platform === "win32") {
+            streams.audio = "loopback";
+          }
+          callback(streams);
+        }).catch((error) => {
+          logger.warn("Display media request failed", { error: error.message });
+          callback({});
+        });
+      });
+    }
   }
 
   setupGlobalShortcuts() {
@@ -418,15 +459,18 @@ class ApplicationController {
 
   setupServiceEventHandlers() {
     speechService.on("recording-started", () => {
-      windowManager.handleRecordingStarted();
+      windowManager.handleRecordingStarted({
+        audioSource: speechService.getAudioSource(),
+        rendererCapture: speechService.usesRendererCapture()
+      });
     });
 
     speechService.on("recording-stopped", () => {
       windowManager.handleRecordingStopped();
     });
 
-    speechService.on("transcription", (text) => {
-      this.handleTranscriptionFragment(text);
+    speechService.on("transcription", (text, meta) => {
+      this.handleTranscriptionFragment(text, meta || {});
     });
 
     speechService.on("interim-transcription", (text) => {
@@ -446,6 +490,19 @@ class ApplicationController {
       });
     });
 
+    // Non-fatal capture problems, e.g. system audio unavailable so only the
+    // microphone is heard. Kept off "speech-error", which stops recording in
+    // the UI, because listening continues.
+    const broadcastWarning = (message) => {
+      const warning = String(message || "").slice(0, 500);
+      logger.warn("Audio capture warning", { warning });
+      BrowserWindow.getAllWindows().forEach((window) => {
+        window.webContents.send("speech-warning", { warning });
+      });
+    };
+    ipcMain.on("audio-capture-warning", (_event, message) => broadcastWarning(message));
+    speechService.on("warning", broadcastWarning);
+
     speechService.on("error", (error) => {
       // In error, still compute availability
       this.speechAvailable = speechService.isAvailable ? speechService.isAvailable() : false;
@@ -455,7 +512,61 @@ class ApplicationController {
     });
   }
 
+  setupContextDocsIPC() {
+    const send = (docs) => {
+      windowManager.broadcastToAllWindows("context-docs-changed", { docs });
+      return docs;
+    };
+
+    ipcMain.handle("context-docs:list", () => contextDocs.list());
+
+    ipcMain.handle("context-docs:add-files", async (event, kind) => {
+      const parent = BrowserWindow.fromWebContents(event.sender) || undefined;
+      const result = await dialog.showOpenDialog(parent, {
+        title: "Add interview prep documents",
+        properties: ["openFile", "multiSelections"],
+        filters: [
+          { name: "Documents", extensions: contextDocs.getSupportedExtensions() },
+          { name: "All files", extensions: ["*"] }
+        ]
+      });
+      const errors = [];
+      if (!result.canceled) {
+        for (const filePath of result.filePaths) {
+          try {
+            await contextDocs.addFile(filePath, kind || null);
+          } catch (error) {
+            errors.push(`${path.basename(filePath)}: ${error.message}`);
+          }
+        }
+      }
+      return { docs: send(contextDocs.list()), errors };
+    });
+
+    ipcMain.handle("context-docs:add-text", (_event, payload = {}) => {
+      try {
+        return { docs: send(contextDocs.addText(payload.name, payload.text, payload.kind || "notes")), errors: [] };
+      } catch (error) {
+        return { docs: contextDocs.list(), errors: [error.message] };
+      }
+    });
+
+    ipcMain.handle("context-docs:update", (_event, payload = {}) => {
+      try {
+        return { docs: send(contextDocs.update(payload.id, payload.changes || {})), errors: [] };
+      } catch (error) {
+        return { docs: contextDocs.list(), errors: [error.message] };
+      }
+    });
+
+    ipcMain.handle("context-docs:remove", (_event, id) => ({
+      docs: send(contextDocs.remove(id)),
+      errors: []
+    }));
+  }
+
   setupIPCHandlers() {
+  this.setupContextDocsIPC();
   ipcMain.handle("take-screenshot", () => this.triggerScreenshotOCR());
   ipcMain.handle("list-displays", () => captureService.listDisplays());
   ipcMain.handle("capture-area", (event, options) => captureService.captureAndProcess(options));
@@ -1227,16 +1338,25 @@ class ApplicationController {
    * asked once the speaker has actually paused — this is what stops one spoken
    * line from producing two separate, slow answers.
    */
-  handleTranscriptionFragment(text) {
+  handleTranscriptionFragment(text, meta = {}) {
     const fragment = (text || "").trim();
     if (!fragment) {
       return;
     }
+    const language = meta.language || null;
 
     // Route speech UI events according to the user's response-target setting.
     sessionManager.addUserInput(fragment, 'speech');
-    this.sendToVoiceResponseWindows("transcription-received", { text: fragment });
+    this.sendToVoiceResponseWindows("transcription-received", {
+      text: fragment,
+      language,
+      languageName: language ? languageName(language) : null,
+      isQuestion: isLikelyQuestion(fragment, language)
+    });
 
+    if (language) {
+      this._utteranceLanguage = language;
+    }
     this._utteranceBuffer = this._utteranceBuffer
       ? `${this._utteranceBuffer} ${fragment}`
       : fragment;
@@ -1272,12 +1392,30 @@ class ApplicationController {
     if (!combined) {
       return;
     }
+    const language = this._utteranceLanguage;
+
+    // In "questions" mode only questions get an answer. Everything else
+    // (small talk, the candidate's own answer) is already in the session
+    // history, so it still informs the next answer without triggering one.
+    // A manual capture is an explicit request and is always answered.
+    if (this.getQuestionMode() === "questions" &&
+        !speechService.isManualCaptureMode() &&
+        !isLikelyQuestion(combined, language)) {
+      logger.debug("Utterance is not a question; kept as context only", {
+        language,
+        preview: combined.substring(0, 80)
+      });
+      this._utteranceBuffer = "";
+      this.sendToVoiceResponseWindows("transcription-skipped", { reason: "not-a-question", language });
+      return;
+    }
+
     this._utteranceBuffer = "";
     this._utteranceDispatchInFlight = true;
 
     try {
       const sessionHistory = sessionManager.getOptimizedHistory();
-      await this.processTranscriptionWithLLM(combined, sessionHistory);
+      await this.processTranscriptionWithLLM(combined, sessionHistory, { language });
     } catch (error) {
       logger.error("Failed to process transcription with LLM", {
         error: error.message,
@@ -1292,7 +1430,7 @@ class ApplicationController {
     }
   }
 
-  async processTranscriptionWithLLM(text, sessionHistory) {
+  async processTranscriptionWithLLM(text, sessionHistory, { language = null } = {}) {
     // Hoisted so the catch block can tie a fallback answer to the same UI
     // bubble the streaming start event created; otherwise a total failure
     // leaves an empty streamed bubble stranded next to the fallback message.
@@ -1332,7 +1470,8 @@ class ApplicationController {
       messageId = `tr-${Date.now()}-${this._responseSeq}`;
       this.sendToVoiceResponseWindows("transcription-llm-response-start", {
         messageId,
-        skill: this.activeSkill
+        skill: this.activeSkill,
+        language
       });
       if (this.shouldShowVoiceOverlay()) {
         windowManager.showLLMLoading();
@@ -1347,9 +1486,10 @@ class ApplicationController {
             messageId,
             delta
           });
-        }
+        },
+        { spokenLanguage: language }
       );
-      llmResult.metadata = { ...llmResult.metadata, messageId };
+      llmResult.metadata = { ...llmResult.metadata, messageId, language };
 
       // Add LLM response to session memory
       sessionManager.addModelResponse(llmResult.response, {
@@ -1498,6 +1638,12 @@ class ApplicationController {
     chatWindow.webContents.send(channel, data);
   }
 
+  /** "questions" answers only detected questions; "all" answers every utterance. */
+  getQuestionMode() {
+    const configured = String(process.env.QUESTION_MODE || 'questions').trim().toLowerCase();
+    return configured === 'all' ? 'all' : 'questions';
+  }
+
   getVoiceResponseTarget() {
     const configured = String(process.env.WHISPER_RESPONSE_TARGET || 'both').trim().toLowerCase();
     return ['chat', 'overlay', 'both'].includes(configured) ? configured : 'both';
@@ -1606,6 +1752,10 @@ class ApplicationController {
         (process.env.WHISPER_MANUAL_CAPTURE === "true" ? "manual" : "vad"),
       whisperResponseTarget: process.env.WHISPER_RESPONSE_TARGET || "both",
       whisperSegmentMs: process.env.WHISPER_SEGMENT_MS || "4000",
+      audioSource: speechService.getAudioSource(),
+      spokenLanguages: speechService.getSpokenLanguages().join(","),
+      answerLanguage: process.env.ANSWER_LANGUAGE || "match",
+      questionMode: this.getQuestionMode(),
       geminiKey: process.env.GEMINI_API_KEY || "",
 
       azureConfigured: !!process.env.AZURE_SPEECH_KEY && !!process.env.AZURE_SPEECH_REGION,
@@ -1677,6 +1827,19 @@ class ApplicationController {
       }
       if (settings.geminiKey !== undefined) {
         envUpdates.GEMINI_API_KEY = settings.geminiKey;
+      }
+      if (["mic", "system", "both"].includes(settings.audioSource)) {
+        envUpdates.AUDIO_SOURCE = settings.audioSource;
+      }
+      if (typeof settings.spokenLanguages === "string") {
+        envUpdates.SPOKEN_LANGUAGES = settings.spokenLanguages
+          .split(/[\s,;]+/).filter((code) => /^[a-z]{2,3}$/i.test(code)).join(",").toLowerCase() || "en,fr,ar";
+      }
+      if (["match", "en", "fr", "ar"].includes(settings.answerLanguage)) {
+        envUpdates.ANSWER_LANGUAGE = settings.answerLanguage;
+      }
+      if (["questions", "all"].includes(settings.questionMode)) {
+        envUpdates.QUESTION_MODE = settings.questionMode;
       }
 
       // Capture the previous whisper command BEFORE persisting — persistEnvUpdates

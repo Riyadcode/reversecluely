@@ -387,6 +387,12 @@ const { EventEmitter } = require('events');
 const logger = require('../core/logger').createServiceLogger('SPEECH');
 const config = require('../core/config');
 const WhisperWorkerService = require('./whisper-worker.service');
+const { PcmMixer, LinuxSystemAudioCapture } = require('./system-audio.service');
+const {
+  parseLanguageList,
+  resolveUtteranceLanguage,
+  toAzureLocale
+} = require('../core/language');
 
 let sdk = null;
 try {
@@ -428,6 +434,9 @@ class SpeechService extends EventEmitter {
     this.whisperWorker = new WhisperWorkerService();
     this.isProcessingAudio = false;
     this.manualStopRequested = false;
+    this.systemAudioCapture = null;
+    this.nativeMixer = null;
+    this.lastDetectedLanguage = null;
     this._resetVadState();
 
     this.initializeClient();
@@ -482,6 +491,12 @@ class SpeechService extends EventEmitter {
 
       const azureConfig = config.get('speech.azure') || {};
       this.speechConfig.speechRecognitionLanguage = azureConfig.language || 'en-US';
+      // Continuous language ID lets one session switch between English,
+      // French and Arabic mid-interview instead of being pinned to en-US.
+      this.azureAutoDetectLocales = this._getAzureAutoDetectLocales();
+      if (this.azureAutoDetectLocales.length > 1) {
+        this.speechConfig.setProperty(sdk.PropertyId.SpeechServiceConnection_LanguageIdMode, 'Continuous');
+      }
       this.speechConfig.outputFormat = sdk.OutputFormat.Detailed;
       this.speechConfig.setProperty(sdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '5000');
       this.speechConfig.setProperty(sdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, '2000');
@@ -592,8 +607,17 @@ class SpeechService extends EventEmitter {
     try {
       this.pushStream = sdk.AudioInputStream.createPushStream();
       this.audioConfig = sdk.AudioConfig.fromStreamInput(this.pushStream);
-      this._startMicrophoneCapture();
-      this.recognizer = new sdk.SpeechRecognizer(this.speechConfig, this.audioConfig);
+      const locales = this.azureAutoDetectLocales || [];
+      if (locales.length > 1) {
+        const autoDetect = sdk.AutoDetectSourceLanguageConfig.fromLanguages(locales);
+        this.recognizer = sdk.SpeechRecognizer.FromConfig(this.speechConfig, autoDetect, this.audioConfig);
+      } else {
+        if (locales.length === 1) {
+          this.speechConfig.speechRecognitionLanguage = locales[0];
+        }
+        this.recognizer = new sdk.SpeechRecognizer(this.speechConfig, this.audioConfig);
+      }
+      this._startAudioSources();
     } catch (error) {
       logger.error('Failed to start Azure recording session', { error: error.message });
       this.emit('error', `Audio configuration failed: ${error.message}`);
@@ -614,7 +638,11 @@ class SpeechService extends EventEmitter {
     this.recognizer.recognized = (s, e) => {
       try {
         if (e.result.reason === sdk.ResultReason.RecognizedSpeech && e.result.text && e.result.text.trim()) {
-          this.emit('transcription', e.result.text);
+          let reported = null;
+          try {
+            reported = sdk.AutoDetectSourceLanguageResult.fromResult(e.result).language;
+          } catch (_) { /* single-language session */ }
+          this._emitTranscription(e.result.text, reported);
         }
       } catch (error) {
         logger.error('Error in recognized handler', { error: error.message });
@@ -712,21 +740,158 @@ class SpeechService extends EventEmitter {
     // and a child-process mic that the system TCC prompt can't attribute. The
     // renderer path uses getUserMedia, which macOS prompts for cleanly via the
     // app's NSMicrophoneUsageDescription. Linux keeps the native recorder path.
-    this.useRendererCapture = process.platform === 'win32' || process.platform === 'darwin';
-    if (this.useRendererCapture) {
-      this.emit('status', 'Waiting for microphone audio…');
-      // The renderer starts sending chunks once it receives the recording-started event.
-      if (!this._isManualCaptureMode()) {
-        this._startSegmentWatchdog();
-      }
-      return;
-    }
-
-    this._startMicrophoneCapture();
+    this._startAudioSources();
     if (!this._isManualCaptureMode()) {
       this._startSegmentWatchdog();
     }
 
+  }
+
+  /**
+   * Which audio the session listens to: the microphone (your voice), the
+   * system output (the interviewer in your headphones), or both mixed.
+   * "both" is the default so questions are heard even with earphones on.
+   */
+  getAudioSource() {
+    const configured = String(
+      this._getSetting('audioSource') || process.env.AUDIO_SOURCE || 'both'
+    ).trim().toLowerCase();
+    return ['mic', 'system', 'both'].includes(configured) ? configured : 'both';
+  }
+
+  /** Whether the renderer (Web Audio) captures audio for this platform. */
+  usesRendererCapture() {
+    return process.platform === 'win32' || process.platform === 'darwin';
+  }
+
+  /**
+   * Start the capture backends for the configured audio source. Windows and
+   * macOS capture (and mix) in the renderer, which receives the source via
+   * the recording-started event. Linux records natively: the mic through
+   * arecord/sox and system audio through the Pulse/PipeWire monitor.
+   */
+  _startAudioSources() {
+    const source = this.getAudioSource();
+    this.useRendererCapture = this.usesRendererCapture();
+    if (this.useRendererCapture) {
+      this.emit('status', source === 'mic' ? 'Waiting for microphone audio…' : 'Waiting for microphone and system audio…');
+      return;
+    }
+
+    const wantMic = source !== 'system';
+    const wantSystem = source !== 'mic';
+    const sources = [];
+    if (wantMic) sources.push('mic');
+    if (wantSystem) sources.push('system');
+
+    this.nativeMixer = new PcmMixer(sources);
+    this.nativeMixer.on('data', (mixed) => this._handleMixedAudio(mixed));
+
+    if (wantSystem) {
+      try {
+        this.systemAudioCapture = new LinuxSystemAudioCapture();
+        this.systemAudioCapture.on('data', (chunk) => {
+          if (this.nativeMixer) this.nativeMixer.push('system', chunk);
+        });
+        this.systemAudioCapture.on('error', (error) => {
+          this._dropNativeSource('system');
+          const message = `System audio capture failed: ${error.message}`;
+          // Recording carries on if the microphone is still feeding the mixer.
+          this.emit(this.nativeMixer ? 'warning' : 'error', this.nativeMixer ? `${message} Listening to the microphone only.` : message);
+        });
+        this.systemAudioCapture.start();
+      } catch (error) {
+        logger.warn('System audio capture unavailable', { error: error.message });
+        this.emit('warning', `${error.message} Listening to the microphone only.`);
+        this.systemAudioCapture = null;
+        if (!wantMic) {
+          // System-only was requested but cannot run: use the mic rather than hear nothing.
+          this.nativeMixer = new PcmMixer(['mic']);
+          this.nativeMixer.on('data', (mixed) => this._handleMixedAudio(mixed));
+          this._startMicrophoneCapture();
+          return;
+        }
+        this._dropNativeSource('system');
+      }
+    }
+    if (wantMic) {
+      this._startMicrophoneCapture();
+    }
+  }
+
+  /** Rebuild the mixer without a source that failed, so the other isn't held back. */
+  _dropNativeSource(name) {
+    if (!this.nativeMixer || !this.nativeMixer.queues.has(name)) {
+      return;
+    }
+    const remaining = [...this.nativeMixer.queues.keys()].filter((n) => n !== name);
+    this.nativeMixer.removeAllListeners('data');
+    this.nativeMixer = remaining.length ? new PcmMixer(remaining) : null;
+    if (this.nativeMixer) {
+      this.nativeMixer.on('data', (mixed) => this._handleMixedAudio(mixed));
+    }
+  }
+
+  _stopAudioSources() {
+    if (this.systemAudioCapture) {
+      this.systemAudioCapture.stop();
+      this.systemAudioCapture = null;
+    }
+    if (this.nativeMixer) {
+      this.nativeMixer.flush();
+      this.nativeMixer.removeAllListeners('data');
+      this.nativeMixer = null;
+    }
+  }
+
+  /** Single sink for captured audio, whichever backend produced it. */
+  _handleMixedAudio(chunk) {
+    if (!chunk || !chunk.length || !this.isRecording) {
+      return;
+    }
+    if (this.provider === 'azure' && this.pushStream) {
+      try {
+        this.pushStream.write(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.length));
+      } catch (error) {
+        logger.error('Error writing audio data to Azure push stream', { error: error.message });
+      }
+      return;
+    }
+    if (this.provider === 'whisper') {
+      this._ingestWhisperAudio(chunk);
+    }
+  }
+
+  /**
+   * Emit a final transcript tagged with its spoken language, restricted to
+   * the languages the user expects (English, French, Arabic by default).
+   */
+  _emitTranscription(text, reportedLanguage) {
+    const clean = String(text || '').trim();
+    if (!clean) {
+      return;
+    }
+    const language = resolveUtteranceLanguage(reportedLanguage, clean, this.getSpokenLanguages());
+    this.lastDetectedLanguage = language;
+    this.emit('transcription', clean, { language, source: this.getAudioSource() });
+  }
+
+  /** Languages expected in the interview, e.g. ['en', 'fr', 'ar']. */
+  getSpokenLanguages() {
+    return parseLanguageList(this._getSetting('spokenLanguages') || process.env.SPOKEN_LANGUAGES || 'en,fr,ar');
+  }
+
+  _getAzureAutoDetectLocales() {
+    const fixed = this._getWhisperLanguage();
+    if (fixed && fixed !== 'auto' && fixed !== 'detect') {
+      const locale = toAzureLocale(fixed) || fixed;
+      return [locale];
+    }
+    // Azure continuous language ID accepts up to 10 candidate locales.
+    return this.getSpokenLanguages()
+      .map((code) => toAzureLocale(code))
+      .filter(Boolean)
+      .slice(0, 10);
   }
 
   /**
@@ -788,14 +953,14 @@ class SpeechService extends EventEmitter {
    * the current Whisper segment buffer.
    */
   handleAudioChunkFromRenderer(chunk) {
-    if (!this.isRecording || this.provider !== 'whisper' || !this.useRendererCapture) {
+    if (!this.isRecording || !this.useRendererCapture) {
       return;
     }
     if (!chunk || !chunk.length) {
       return;
     }
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    this._ingestWhisperAudio(buffer);
+    this._handleMixedAudio(buffer);
   }
 
   /**
@@ -999,6 +1164,7 @@ class SpeechService extends EventEmitter {
       }
       this.recording = null;
     }
+    this._stopAudioSources();
 
     try {
       await this._flushWhisperSegment({ final: true });
@@ -1027,6 +1193,8 @@ class SpeechService extends EventEmitter {
       clearInterval(this.segmentTimer);
       this.segmentTimer = null;
     }
+
+    this._stopAudioSources();
 
     if (this.recognizer) {
       try {
@@ -1108,7 +1276,8 @@ class SpeechService extends EventEmitter {
     }
 
     if (this.provider === 'whisper') {
-      return this._transcribeWhisperFile(audioFilePath);
+      const result = await this._transcribeWhisperFile(audioFilePath);
+      return result.text;
     }
 
     throw new Error('Speech service not initialized');
@@ -1175,8 +1344,11 @@ class SpeechService extends EventEmitter {
         whisperLanguage: this._getWhisperLanguage(),
         whisperCaptureMode: this._getWhisperCaptureMode(),
         whisperDevice: this._getWhisperDevice(),
-        whisperSegmentMs: String(this._getWhisperSegmentMs())
+        whisperSegmentMs: String(this._getWhisperSegmentMs()),
+        spokenLanguages: this.getSpokenLanguages().join(','),
+        audioSource: this.getAudioSource()
       },
+      lastDetectedLanguage: this.lastDetectedLanguage,
       config: {
         azure: config.get('speech.azure') || {},
         whisper: config.get('speech.whisper') || {},
@@ -1209,7 +1381,7 @@ class SpeechService extends EventEmitter {
   }
 
   updateSettings(settings = {}) {
-    const speechKeys = ['speechProvider', 'azureKey', 'azureRegion', 'whisperCommand', 'whisperModelDir', 'whisperModel', 'whisperLanguage', 'whisperCaptureMode', 'whisperDevice', 'whisperSegmentMs'];
+    const speechKeys = ['speechProvider', 'azureKey', 'azureRegion', 'whisperCommand', 'whisperModelDir', 'whisperModel', 'whisperLanguage', 'whisperCaptureMode', 'whisperDevice', 'whisperSegmentMs', 'spokenLanguages', 'audioSource'];
     let changed = false;
 
     for (const key of speechKeys) {
@@ -1791,19 +1963,12 @@ class SpeechService extends EventEmitter {
     if (!chunk || !chunk.length || !this.isRecording) {
       return;
     }
-
-    if (this.provider === 'azure' && this.pushStream) {
-      try {
-        this.pushStream.write(chunk);
-      } catch (error) {
-        logger.error('Error writing audio data to Azure push stream', { error: error.message });
-      }
+    const buffer = Buffer.from(chunk);
+    if (this.nativeMixer) {
+      this.nativeMixer.push('mic', buffer);
       return;
     }
-
-    if (this.provider === 'whisper') {
-      this._ingestWhisperAudio(Buffer.from(chunk));
-    }
+    this._handleMixedAudio(buffer);
   }
 
   async _flushWhisperSegment({ final }) {
@@ -1831,10 +1996,10 @@ class SpeechService extends EventEmitter {
     this.transcriptionInFlight = true;
 
     try {
-      const transcript = await this._transcribeWhisperBuffer(audioBuffer);
-      const clean = transcript ? transcript.trim() : '';
+      const result = await this._transcribeWhisperBuffer(audioBuffer);
+      const clean = result && result.text ? result.text.trim() : '';
       if (clean && !this._isHallucinatedTranscript(clean)) {
-        this.emit('transcription', clean);
+        this._emitTranscription(clean, result.language);
       } else if (clean) {
         logger.debug('Dropped likely Whisper silence hallucination', { transcript: clean });
       }
@@ -1881,7 +2046,7 @@ class SpeechService extends EventEmitter {
   }
 
   async _transcribeWhisperBuffer(audioBuffer) {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencluely-whisper-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'arlclue-whisper-'));
     const audioFilePath = path.join(tempDir, 'segment.wav');
 
     try {
@@ -1903,6 +2068,7 @@ class SpeechService extends EventEmitter {
         const result = await this.whisperWorker.transcribe(audioFilePath, {
           model: this._getWhisperModel(),
           language: this._getWhisperLanguage(),
+          allowedLanguages: this.getSpokenLanguages(),
           modelDir: this._getWhisperModelDir(),
           device: this._getWhisperDevice()
         });
@@ -1911,9 +2077,10 @@ class SpeechService extends EventEmitter {
           model: result.model,
           device: result.device,
           gpu: result.gpu,
-          detectedLanguage: result.language
+          detectedLanguage: result.language,
+          languageProbs: result.language_probs
         });
-        return result.text || '';
+        return { text: result.text || '', language: result.language || null };
       } catch (error) {
         logger.warn('Persistent Whisper worker failed; falling back to CLI', {
           error: error.message,
@@ -1922,13 +2089,13 @@ class SpeechService extends EventEmitter {
       }
     }
 
-    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencluely-whisper-out-'));
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'arlclue-whisper-out-'));
     const args = [
       ...this.whisperCommand.baseArgs,
       audioFilePath,
       '--model', this._getWhisperModel(),
       '--task', 'transcribe',
-      '--output_format', 'txt',
+      '--output_format', 'json',
       '--output_dir', outputDir,
       '--verbose', 'False',
       '--fp16', 'False'
@@ -1968,12 +2135,14 @@ class SpeechService extends EventEmitter {
         });
       });
 
-      const transcriptPath = path.join(outputDir, `${path.parse(audioFilePath).name}.txt`);
+      // JSON output carries Whisper's detected language alongside the text.
+      const transcriptPath = path.join(outputDir, `${path.parse(audioFilePath).name}.json`);
       if (!fs.existsSync(transcriptPath)) {
-        return '';
+        return { text: '', language: null };
       }
 
-      return fs.readFileSync(transcriptPath, 'utf8').trim();
+      const parsed = JSON.parse(fs.readFileSync(transcriptPath, 'utf8'));
+      return { text: String(parsed.text || '').trim(), language: parsed.language || null };
     } finally {
       this._removeTempDir(outputDir);
     }

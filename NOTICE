@@ -1,0 +1,12 @@
+arlclue
+Copyright 2026 riyadcode
+
+This product is a modified version of OpenCluely
+(https://github.com/TechyCSR/OpenCluely, commit 0a9da75),
+Copyright TechyCSR, licensed under the Apache License, Version 2.0.
+
+Modifications include: renaming to arlclue; interview prep documents
+(resume, job description, notes) injected into prompts; automatic
+English/French/Arabic language detection and answer-language control;
+system-audio (loopback/monitor) capture with question detection; and a
+fix so the non-streaming Gemini path sends the system instruction.

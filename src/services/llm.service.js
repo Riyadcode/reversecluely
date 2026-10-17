@@ -2,6 +2,8 @@ const { GoogleGenAI } = require('@google/genai');
 const logger = require('../core/logger').createServiceLogger('LLM');
 const config = require('../core/config');
 const { promptLoader } = require('../../prompt-loader');
+const contextDocs = require('./context-docs.service');
+const { buildAnswerLanguageInstruction, guessLanguageFromText } = require('../core/language');
 
 class LLMService {
   constructor() {
@@ -10,8 +12,38 @@ class LLMService {
     this.isInitialized = false;
     this.requestCount = 0;
     this.errorCount = 0;
+    // Requests that already carry the candidate context, so the executors
+    // never append it twice when a caller applied it with a known language.
+    this._contextApplied = new WeakSet();
     
     this.initializeClient();
+  }
+
+  /**
+   * Append the arlclue additions to a request's system instruction: the prep
+   * documents (resume, job description, notes) and which language to answer
+   * in. spokenLanguage comes from speech detection; typed text is guessed.
+   */
+  applyCandidateContext(geminiRequest, { spokenLanguage = null, text = null } = {}) {
+    if (!geminiRequest || this._contextApplied.has(geminiRequest)) {
+      return geminiRequest;
+    }
+    this._contextApplied.add(geminiRequest);
+
+    const language = spokenLanguage || (text ? guessLanguageFromText(text) : null);
+    const additions = [
+      contextDocs.buildContextBlock(),
+      buildAnswerLanguageInstruction(language, process.env.ANSWER_LANGUAGE || 'match')
+    ].filter(Boolean);
+
+    if (!geminiRequest.systemInstruction) {
+      geminiRequest.systemInstruction = { parts: [] };
+    }
+    if (!Array.isArray(geminiRequest.systemInstruction.parts)) {
+      geminiRequest.systemInstruction.parts = [];
+    }
+    geminiRequest.systemInstruction.parts.push({ text: additions.join('\n\n') });
+    return geminiRequest;
   }
 
   initializeClient() {
@@ -799,7 +831,11 @@ Always respond to the point, do not repeat the question or unnecessary informati
 
 ## Response Rules:
 
-### If the transcription is casual conversation, greetings, or NOT related to ${activeSkill}:
+### Questions about the candidate are ALWAYS relevant, whatever the mode:
+- Background, experience, projects, education, motivation, strengths/weaknesses, salary, availability, "tell me about yourself", "why this company/role", situational and behavioral (STAR) questions, and questions about the role or company.
+- Answer them in the first person, as the candidate would say it aloud, using the candidate background below when it is provided. Keep it natural and concise (about 4-8 sentences, or a short STAR structure).
+
+### If the transcription is casual conversation, greetings, or NOT related to ${activeSkill} (and not a question about the candidate):
 - Respond with: "Yeah, I'm listening. Ask your question relevant to ${activeSkill}."
 - Or similar brief acknowledgments like: "I'm here, what's your ${activeSkill} question?"
 
@@ -810,10 +846,10 @@ Always respond to the point, do not repeat the question or unnecessary informati
 - Do not truncate or shorten your response
 
 ### Examples of casual/irrelevant messages:
-- "Hello", "Hi there", "How are you?"
+- "Hello", "Hi there", "How are you?", "Bonjour, ça va ?", "السلام عليكم"
 - "What's the weather like?"
 - "I'm just testing this"
-- Random conversations not related to ${activeSkill}
+- Random conversations not related to ${activeSkill} that are not questions about the candidate
 
 ### Examples of relevant messages:
 - Actual questions about ${activeSkill} concepts
@@ -839,6 +875,7 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
   }
 
   async executeRequest(geminiRequest) {
+    this.applyCandidateContext(geminiRequest);
     const maxRetries = config.get('llm.gemini.maxRetries');
     const timeout = config.get('llm.gemini.timeout');
     const primaryModel = this.model;
@@ -874,8 +911,13 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
           const requestPromise = this.client.models.generateContent({
             model: modelName,
             contents: geminiRequest.contents,
-            config: geminiRequest.generationConfig,
-            systemInstruction: geminiRequest.systemInstruction
+            // @google/genai reads systemInstruction from config; a top-level
+            // field is silently ignored, which dropped the skill prompt and
+            // the prep documents on this non-streaming path.
+            config: {
+              ...(geminiRequest.generationConfig || {}),
+              ...(geminiRequest.systemInstruction ? { systemInstruction: geminiRequest.systemInstruction } : {})
+            }
           });
           const result = await Promise.race([requestPromise, timeoutPromise]);
 
@@ -978,7 +1020,7 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
    * {response, metadata} shape. Falls back to the non-streaming path on any
    * streaming failure so reliability is never worse than before.
    */
-  async processTranscriptionWithIntelligentResponseStream(text, activeSkill, sessionMemory = [], programmingLanguage = null, onDelta = null) {
+  async processTranscriptionWithIntelligentResponseStream(text, activeSkill, sessionMemory = [], programmingLanguage = null, onDelta = null, options = {}) {
     if (!this.isInitialized) {
       throw new Error('LLM service not initialized. Check Gemini API key configuration.');
     }
@@ -988,6 +1030,7 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
 
     try {
       const geminiRequest = this.buildIntelligentTranscriptionRequest(text, activeSkill, sessionMemory, programmingLanguage);
+      this.applyCandidateContext(geminiRequest, { spokenLanguage: options.spokenLanguage, text });
 
       const fullText = await this.executeStreamingRequest(geminiRequest, (delta) => {
         if (typeof onDelta === 'function' && delta) {
@@ -1054,6 +1097,7 @@ Remember: Be intelligent about filtering - only provide detailed responses when 
    * for each chunk.
    */
   async executeStreamingRequest(geminiRequest, onDelta) {
+    this.applyCandidateContext(geminiRequest);
     const maxRetries = config.get('llm.gemini.maxRetries');
     const apiKey = config.getApiKey('GEMINI');
     const primaryModel = this.model;

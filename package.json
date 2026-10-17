@@ -1,9 +1,10 @@
 {
-  "name": "opencluely",
+  "name": "arlclue",
   "version": "1.0.0",
-  "description": "AI Problem Solving Assistant",
+  "description": "arlclue — AI interview assistant (fork of OpenCluely) with prep documents, EN/FR/AR language detection and system-audio capture",
   "main": "main.js",
   "scripts": {
+    "test": "node --test tests/*.test.js",
     "start": "env -u ELECTRON_RUN_AS_NODE electron .",
     "dev": "env -u ELECTRON_RUN_AS_NODE electron . --no-sandbox --disable-gpu",
     "test-speech": "node scripts/test-speech.js",
@@ -20,23 +21,23 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "author": {
-    "name": "TechyCSR",
-    "email": "info@techycsr.dev",
-    "url": "https://techycsr.dev"
+    "name": "riyadcode"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/TechyCSR/OpenCluely"
+    "url": "https://github.com/riyadcode/reversecluely"
   },
-  "license": "ISC",
+  "license": "Apache-2.0",
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.2.0",
     "@google/genai": "^2.9.0",
     "dotenv": "^16.3.1",
+    "mammoth": "^1.13.0",
     "markdown": "^0.5.0",
     "marked": "^15.0.12",
     "microsoft-cognitiveservices-speech-sdk": "^1.40.0",
     "node-record-lpcm16": "^1.0.1",
+    "pdf-parse": "^1.1.1",
     "prismjs": "^1.30.0",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^4.7.1"
@@ -46,8 +47,8 @@
     "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId": "com.opencluely.app",
-    "productName": "OpenCluely",
+    "appId": "com.arlclue.app",
+    "productName": "arlclue",
     "directories": {
       "output": "dist"
     },
@@ -91,9 +92,10 @@
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "OpenCluely uses the microphone to transcribe your speech locally with Whisper.",
-        "NSCameraUsageDescription": "OpenCluely does not record video; this entitlement is only present for media-capture compatibility.",
-        "NSScreenCaptureUsageDescription": "OpenCluely captures the screen to read on-screen content for AI assistance."
+        "NSMicrophoneUsageDescription": "arlclue uses the microphone to transcribe your speech locally with Whisper.",
+        "NSCameraUsageDescription": "arlclue does not record video; this entitlement is only present for media-capture compatibility.",
+        "NSScreenCaptureUsageDescription": "arlclue captures the screen to read on-screen content for AI assistance.",
+        "NSAudioCaptureUsageDescription": "arlclue captures system audio so it can hear the interviewer through your headphones."
       }
     },
     "win": {
@@ -148,7 +150,8 @@
         "python3-pip"
       ],
       "recommends": [
-        "ffmpeg"
+        "ffmpeg",
+        "pulseaudio-utils"
       ],
       "fpm": [
         "--after-install=scripts/post-install-deb.sh"
@@ -162,10 +165,10 @@
       "perMachine": false,
       "include": "scripts/post-install-nsis.nsh",
       "deleteAppDataOnUninstall": false,
-      "artifactName": "OpenCluely-Setup-${version}.${ext}"
+      "artifactName": "arlclue-Setup-${version}.${ext}"
     },
     "dmg": {
-      "title": "OpenCluely Interview Assistant",
+      "title": "arlclue Interview Assistant",
       "backgroundColor": "#000000",
       "window": {
         "width": 600,

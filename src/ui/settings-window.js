@@ -21,6 +21,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const codingLanguageSelect = document.getElementById('codingLanguage');
     const activeSkillSelect = document.getElementById('activeSkill');
     const iconGrid = document.getElementById('iconGrid');
+    const audioSourceSelect = document.getElementById('audioSource');
+    const spokenLanguagesInput = document.getElementById('spokenLanguages');
+    const answerLanguageSelect = document.getElementById('answerLanguage');
+    const questionModeSelect = document.getElementById('questionMode');
 
     // Check if window.api exists
     if (!window.api) {
@@ -89,6 +93,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (whisperSegmentMsInput) whisperSegmentMsInput.value = settings.whisperSegmentMs || '';
         if (geminiKeyInput) geminiKeyInput.value = settings.geminiKey || '';
         if (windowGapInput) windowGapInput.value = settings.windowGap || '';
+        if (audioSourceSelect) audioSourceSelect.value = settings.audioSource || 'both';
+        if (spokenLanguagesInput) spokenLanguagesInput.value = settings.spokenLanguages || 'en,fr,ar';
+        if (answerLanguageSelect) answerLanguageSelect.value = settings.answerLanguage || 'match';
+        if (questionModeSelect) questionModeSelect.value = settings.questionMode || 'questions';
 
         // Set C++ as default if no coding language is specified
         if (codingLanguageSelect) {
@@ -150,6 +158,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (windowGapInput) settings.windowGap = windowGapInput.value;
         if (codingLanguageSelect) settings.codingLanguage = codingLanguageSelect.value;
         if (activeSkillSelect) settings.activeSkill = activeSkillSelect.value;
+        if (audioSourceSelect) settings.audioSource = audioSourceSelect.value;
+        if (spokenLanguagesInput) settings.spokenLanguages = spokenLanguagesInput.value;
+        if (answerLanguageSelect) settings.answerLanguage = answerLanguageSelect.value;
+        if (questionModeSelect) settings.questionMode = questionModeSelect.value;
         
         window.api.send('save-settings', settings);
     };
@@ -196,7 +208,11 @@ document.addEventListener('DOMContentLoaded', () => {
         whisperResponseTargetSelect,
         whisperSegmentMsInput,
         geminiKeyInput,
-        windowGapInput
+        windowGapInput,
+        audioSourceSelect,
+        spokenLanguagesInput,
+        answerLanguageSelect,
+        questionModeSelect
     ];
 
     inputs.forEach(input => {
@@ -237,6 +253,150 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     updateSpeechFieldStates();
+
+    // ── Interview prep documents ──
+    const docList = document.getElementById('docList');
+    const docErrors = document.getElementById('docErrors');
+    const notesEditor = document.getElementById('notesEditor');
+    const notesTitle = document.getElementById('notesTitle');
+    const notesText = document.getElementById('notesText');
+    const writeNotesButton = document.getElementById('writeNotesButton');
+    const docKinds = [
+        ['resume', 'Resume / CV'],
+        ['job', 'Job description'],
+        ['notes', 'Prep notes'],
+        ['other', 'Reference']
+    ];
+
+    const showDocErrors = (errors) => {
+        if (docErrors) docErrors.textContent = (errors || []).join('\n');
+    };
+
+    const renderDocs = (docs) => {
+        if (!docList) return;
+        docList.textContent = '';
+        if (!docs || docs.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'doc-empty';
+            empty.textContent = 'No documents yet. Answers will be generic until you add your resume.';
+            docList.appendChild(empty);
+            return;
+        }
+        docs.forEach((doc) => {
+            const row = document.createElement('div');
+            row.className = 'doc-row' + (doc.enabled ? '' : ' disabled');
+
+            const toggle = document.createElement('input');
+            toggle.type = 'checkbox';
+            toggle.className = 'doc-toggle';
+            toggle.checked = doc.enabled;
+            toggle.setAttribute('aria-label', `Use ${doc.name} in answers`);
+            toggle.addEventListener('change', () => {
+                window.electronAPI.updateContextDoc(doc.id, { enabled: toggle.checked }).then(handleDocResult);
+            });
+
+            const main = document.createElement('div');
+            main.className = 'doc-main';
+            const name = document.createElement('div');
+            name.className = 'doc-name';
+            name.dir = 'auto';
+            name.textContent = doc.name;
+            name.title = doc.preview || doc.name;
+            const meta = document.createElement('div');
+            meta.className = 'doc-meta';
+            const size = doc.chars >= 1000 ? `${Math.round(doc.chars / 1000)}k chars` : `${doc.chars} chars`;
+            meta.textContent = doc.truncated ? `${size} · trimmed to fit` : size;
+            main.append(name, meta);
+
+            const kind = document.createElement('select');
+            kind.className = 'input-field';
+            kind.setAttribute('aria-label', `Type of ${doc.name}`);
+            docKinds.forEach(([value, label]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                kind.appendChild(option);
+            });
+            kind.value = doc.kind;
+            kind.addEventListener('change', () => {
+                window.electronAPI.updateContextDoc(doc.id, { kind: kind.value }).then(handleDocResult);
+            });
+
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'btn btn-danger';
+            remove.setAttribute('aria-label', `Remove ${doc.name}`);
+            remove.innerHTML = '<i class="fas fa-trash"></i>';
+            remove.addEventListener('click', () => {
+                window.electronAPI.removeContextDoc(doc.id).then(handleDocResult);
+            });
+
+            row.append(toggle, main, kind, remove);
+            docList.appendChild(row);
+        });
+    };
+
+    const handleDocResult = (result) => {
+        if (!result) return;
+        renderDocs(result.docs);
+        showDocErrors(result.errors);
+    };
+
+    const setNotesOpen = (open) => {
+        if (!notesEditor) return;
+        notesEditor.classList.toggle('open', open);
+        if (writeNotesButton) writeNotesButton.setAttribute('aria-expanded', String(open));
+        if (open && notesText) notesText.focus();
+    };
+
+    if (window.electronAPI && window.electronAPI.listContextDocs) {
+        window.electronAPI.listContextDocs().then(renderDocs).catch((error) => {
+            showDocErrors([`Could not load documents: ${error.message}`]);
+        });
+        window.electronAPI.onContextDocsChanged((_event, data) => {
+            if (data && data.docs) renderDocs(data.docs);
+        });
+
+        const addResume = document.getElementById('addResumeButton');
+        if (addResume) {
+            addResume.addEventListener('click', () => {
+                window.electronAPI.addContextDocFiles('resume').then(handleDocResult);
+            });
+        }
+        const addDocs = document.getElementById('addDocsButton');
+        if (addDocs) {
+            addDocs.addEventListener('click', () => {
+                // No kind: the main process guesses it from the file name.
+                window.electronAPI.addContextDocFiles(null).then(handleDocResult);
+            });
+        }
+        if (writeNotesButton) {
+            writeNotesButton.addEventListener('click', () => {
+                setNotesOpen(!notesEditor.classList.contains('open'));
+            });
+        }
+        const cancelNotes = document.getElementById('cancelNotesButton');
+        if (cancelNotes) {
+            cancelNotes.addEventListener('click', () => setNotesOpen(false));
+        }
+        const saveNotes = document.getElementById('saveNotesButton');
+        if (saveNotes) {
+            saveNotes.addEventListener('click', () => {
+                window.electronAPI.addContextDocText({
+                    name: notesTitle ? notesTitle.value : '',
+                    text: notesText ? notesText.value : '',
+                    kind: 'notes'
+                }).then((result) => {
+                    handleDocResult(result);
+                    if (result && (!result.errors || result.errors.length === 0)) {
+                        if (notesTitle) notesTitle.value = '';
+                        if (notesText) notesText.value = '';
+                        setNotesOpen(false);
+                    }
+                });
+            });
+        }
+    }
 
     // Initialize icon grid with correct paths
     const initializeIconGrid = () => {

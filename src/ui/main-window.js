@@ -19,7 +19,7 @@ class MainWindowUI {
         this._popoverHideTimeout = null;
         // Renderer-side audio capture state (used for Whisper on Windows)
         this._audioContext = null;
-        this._mediaStream = null;
+        this._mediaStreams = null;
         this._scriptNode = null;
         this._captureInterval = null;
         
@@ -425,8 +425,8 @@ class MainWindowUI {
                 this.handleInteractionModeChanged(interactive);
             });
 
-            window.electronAPI.onRecordingStarted(() => {
-                this.handleRecordingStarted();
+            window.electronAPI.onRecordingStarted((_event, details) => {
+                this.handleRecordingStarted(details || {});
             });
 
             window.electronAPI.onRecordingStopped(() => {
@@ -641,7 +641,7 @@ class MainWindowUI {
         logger.debug('Screenshot request received', { component: 'MainWindowUI' });
     }
 
-    handleRecordingStarted() {
+    handleRecordingStarted(details = {}) {
         this.isRecording = true;
         if (this.micButton) {
             this.micButton.classList.add('recording');
@@ -655,9 +655,11 @@ class MainWindowUI {
         const platform = (typeof navigator !== 'undefined' &&
           ((navigator.userAgentData && navigator.userAgentData.platform) ||
             navigator.platform || '')).toLowerCase();
-        const useRendererCapture = platform.includes('win') || platform.includes('mac');
+        const useRendererCapture = typeof details.rendererCapture === 'boolean'
+            ? details.rendererCapture
+            : platform.includes('win') || platform.includes('mac');
         if (useRendererCapture) {
-            this._startRendererAudioCapture();
+            this._startRendererAudioCapture(details.audioSource || 'both');
         }
         logger.debug('Recording started', { component: 'MainWindowUI' });
     }
@@ -672,33 +674,69 @@ class MainWindowUI {
     }
 
     /**
-     * Capture microphone audio in the renderer using the Web Audio API.
-     * This is used for Whisper on Windows where node-record-lpcm16's sox/rec
-     * dependencies are unavailable.
+     * Capture audio in the renderer using the Web Audio API and stream 16 kHz
+     * mono PCM to the main process.
+     *
+     * audioSource is 'mic' (your voice), 'system' (what the computer plays —
+     * the interviewer in your earphones) or 'both'. Web Audio sums every
+     * source connected to the processor node, so mixing is free.
      */
-    async _startRendererAudioCapture() {
+    async _startRendererAudioCapture(audioSource = 'both') {
         try {
             this._stopRendererAudioCapture();
 
-            const stream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                    sampleRate: { ideal: 16000 }
+            const wantMic = audioSource !== 'system';
+            const wantSystem = audioSource !== 'mic';
+            const streams = [];
+            const warnings = [];
+
+            if (wantSystem) {
+                try {
+                    streams.push({ kind: 'system', stream: await this._getSystemAudioStream() });
+                } catch (error) {
+                    warnings.push(error.message);
                 }
-            });
-            this._mediaStream = stream;
+            }
+            if (wantMic || streams.length === 0) {
+                // Also used as the fallback when system audio is unavailable.
+                streams.push({
+                    kind: 'mic',
+                    stream: await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            autoGainControl: true,
+                            sampleRate: { ideal: 16000 }
+                        }
+                    })
+                });
+            }
+            this._mediaStreams = streams.map((s) => s.stream);
+
+            if (warnings.length && window.electronAPI && window.electronAPI.reportAudioWarning) {
+                const fallback = streams.some((s) => s.kind === 'system') ? '' : ' Listening to the microphone only.';
+                window.electronAPI.reportAudioWarning(`${warnings.join(' ')}${fallback}`);
+            }
 
             const audioContext = new (window.AudioContext || window.webkitAudioContext)({
                 sampleRate: 16000
             });
             this._audioContext = audioContext;
 
-            const source = audioContext.createMediaStreamSource(stream);
             const bufferSize = 4096;
             const scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
             this._scriptNode = scriptNode;
+
+            // Slightly attenuate each input when mixing so overlapping voices don't clip.
+            const gainValue = streams.length > 1 ? 0.8 : 1;
+            this._audioSources = streams.map(({ stream }) => {
+                const source = audioContext.createMediaStreamSource(stream);
+                const gain = audioContext.createGain();
+                gain.gain.value = gainValue;
+                source.connect(gain);
+                gain.connect(scriptNode);
+                return source;
+            });
 
             scriptNode.onaudioprocess = (event) => {
                 if (!this.isRecording || !window.electronAPI || !window.electronAPI.sendAudioChunk) {
@@ -713,10 +751,15 @@ class MainWindowUI {
                 window.electronAPI.sendAudioChunk(pcm16.buffer);
             };
 
-            source.connect(scriptNode);
+            // The processor must reach the destination to run; it outputs
+            // silence, so system audio is never played back twice.
             scriptNode.connect(audioContext.destination);
 
-            logger.info('Renderer audio capture started', { component: 'MainWindowUI' });
+            logger.info('Renderer audio capture started', {
+                component: 'MainWindowUI',
+                audioSource,
+                captured: streams.map((s) => s.kind)
+            });
         } catch (error) {
             logger.error('Failed to start renderer audio capture', {
                 component: 'MainWindowUI',
@@ -729,6 +772,57 @@ class MainWindowUI {
         }
     }
 
+    /**
+     * Get a stream of what the computer is playing.
+     *  - Windows: Electron's loopback capture through getDisplayMedia (the
+     *    main process answers with audio: 'loopback'); the screen video track
+     *    it has to come with is stopped straight away.
+     *  - macOS (and Windows as a fallback): a virtual loopback input such as
+     *    BlackHole, Loopback, VB-CABLE or Stereo Mix, because Electron 29 has
+     *    no native system-audio capture on macOS.
+     */
+    async _getSystemAudioStream() {
+        const platform = ((navigator.userAgentData && navigator.userAgentData.platform) ||
+            navigator.platform || '').toLowerCase();
+
+        if (platform.includes('win')) {
+            try {
+                const display = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
+                display.getVideoTracks().forEach((track) => {
+                    track.stop();
+                    display.removeTrack(track);
+                });
+                if (display.getAudioTracks().length > 0) {
+                    return display;
+                }
+            } catch (error) {
+                logger.warn('Windows loopback capture failed; looking for a virtual device', {
+                    component: 'MainWindowUI',
+                    error: error.message
+                });
+            }
+        }
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const loopbackPattern = /(blackhole|loopback|soundflower|vb-?audio|cable output|stereo mix|mixage stéréo|what u hear|monitor of|aggregate|multi-output|ishowu|background music)/i;
+        const device = devices.find((d) => d.kind === 'audioinput' && loopbackPattern.test(d.label || ''));
+        if (!device) {
+            const hint = platform.includes('mac')
+                ? 'To hear the interviewer through earphones on macOS, install BlackHole (brew install blackhole-2ch) and create a Multi-Output Device with your earphones + BlackHole in Audio MIDI Setup.'
+                : 'System audio capture is unavailable. Enable "Stereo Mix" or install VB-CABLE.';
+            throw new Error(hint);
+        }
+        return navigator.mediaDevices.getUserMedia({
+            audio: {
+                deviceId: { exact: device.deviceId },
+                // Processing meant for a microphone only degrades a clean digital feed.
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false
+            }
+        });
+    }
+
     _stopRendererAudioCapture() {
         try {
             if (this._scriptNode) {
@@ -736,9 +830,13 @@ class MainWindowUI {
                 this._scriptNode.onaudioprocess = null;
                 this._scriptNode = null;
             }
-            if (this._mediaStream) {
-                this._mediaStream.getTracks().forEach((track) => track.stop());
-                this._mediaStream = null;
+            if (this._audioSources) {
+                this._audioSources.forEach((source) => source.disconnect());
+                this._audioSources = null;
+            }
+            if (this._mediaStreams) {
+                this._mediaStreams.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
+                this._mediaStreams = null;
             }
             if (this._audioContext) {
                 this._audioContext.close().catch(() => {});
@@ -1174,7 +1272,7 @@ class MainWindowUI {
             document.body.removeChild(menu);
         });
 
-        const quitOption = this.createMenuItem('Quit OpenCluely', 'fa-power-off', () => {
+        const quitOption = this.createMenuItem('Quit arlclue', 'fa-power-off', () => {
             if (window.electronAPI && window.electronAPI.quit) {
                 window.electronAPI.quit();
             }

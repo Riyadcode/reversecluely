@@ -671,6 +671,38 @@
           transform: translateY(0);
         }
       }
+      /* Arabic answers read right-to-left; each paragraph picks its own
+         direction from its first strong character, code stays left-to-right. */
+      .message-text,
+      .message-text p,
+      .message-text li,
+      .message-text blockquote {
+        unicode-bidi: plaintext;
+      }
+
+      .message-text pre,
+      .message-text code {
+        direction: ltr;
+        unicode-bidi: isolate;
+        text-align: left;
+      }
+
+      .lang-tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 0 5px;
+        border-radius: 4px;
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        background: rgba(255, 255, 255, 0.14);
+        color: rgba(255, 255, 255, 0.85);
+        vertical-align: middle;
+      }
+
+      .lang-tag.question {
+        background: rgba(76, 175, 80, 0.35);
+      }
     </style>
   </head>
   <body>
@@ -742,7 +774,7 @@
       let speechAvailable = false;
 
       // Chat persistence and deduplication
-      const CHAT_HISTORY_KEY = 'opencluely_chat_history_v1';
+      const CHAT_HISTORY_KEY = 'arlclue_chat_history_v1';
       let chatHistory = [];
       const recentResponseHashes = new Set();
       const RECENT_HASH_LIMIT = 50;
@@ -848,7 +880,7 @@
       initSpeechAvailability();
 
       // Basic message function with markdown support for assistant messages
-      function addMessage(text, type = 'user', skipPersist = false) {
+      function addMessage(text, type = 'user', skipPersist = false, meta = null) {
         if (!chatMessages) {
           console.error('Chat messages element not found!');
           return;
@@ -860,9 +892,26 @@
         const timeDiv = document.createElement('div');
         timeDiv.className = 'message-time';
         timeDiv.textContent = new Date().toLocaleTimeString();
+        // Spoken-language tag for transcripts (EN / FR / AR) and a marker
+        // when the utterance was detected as a question.
+        if (meta && meta.language) {
+          const tag = document.createElement('span');
+          tag.className = 'lang-tag';
+          tag.textContent = String(meta.language).toUpperCase();
+          tag.title = meta.languageName || meta.language;
+          timeDiv.appendChild(tag);
+        }
+        if (meta && meta.isQuestion) {
+          const tag = document.createElement('span');
+          tag.className = 'lang-tag question';
+          tag.textContent = '?';
+          tag.title = 'Detected as a question';
+          timeDiv.appendChild(tag);
+        }
 
         const textDiv = document.createElement('div');
         textDiv.className = 'message-text';
+        textDiv.dir = 'auto';
         
         // Format assistant messages as markdown
         if (type === 'assistant') {
@@ -1008,14 +1057,14 @@
         addMessage('Stopped Listening', 'system');
       }
 
-      function handleTranscription(text) {
+      function handleTranscription(text, meta = null) {
         if (text && typeof text === 'string' && text.trim().length > 0) {
           // Hide listening animation first
           hideListeningAnimation();
 
           // Show transcribed text with slight delay for smooth transition
           setTimeout(() => {
-            addMessage(text.trim(), 'transcription');
+            addMessage(text.trim(), 'transcription', false, meta);
             
             // Show thinking indicator after transcription
             setTimeout(() => {
@@ -1155,10 +1204,23 @@
       if (whysperAPI) {
         whysperAPI.onTranscriptionReceived((event, data) => {
           if (data && data.text) {
-            handleTranscription(data.text);
+            handleTranscription(data.text, data);
           } else {
             console.warn('Invalid transcription data received:', data);
           }
+        });
+
+        // In "questions only" mode, statements get no answer: clear the
+        // thinking indicator that every transcript optimistically shows.
+        whysperAPI.receive('speech-warning', (event, data) => {
+          if (data && data.warning) {
+            addMessage(data.warning, 'system');
+          }
+        });
+
+        whysperAPI.receive('transcription-skipped', () => {
+          hideThinkingIndicator();
+          setTimeout(hideThinkingIndicator, 600);
         });
 
         whysperAPI.onInterimTranscription((event, data) => {

@@ -270,6 +270,111 @@
         .settings-note code {
             color: rgba(255, 255, 255, 0.9);
         }
+
+        /* Interview prep documents */
+        .doc-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .doc-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 10px;
+        }
+
+        .doc-empty {
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.55);
+            padding: 8px;
+            border: 1px dashed rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+        }
+
+        .doc-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .doc-row.disabled {
+            opacity: 0.5;
+        }
+
+        .doc-main {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .doc-name {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.92);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .doc-meta {
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.55);
+            margin-top: 2px;
+        }
+
+        .doc-row select.input-field {
+            width: auto;
+            max-width: 140px;
+            padding: 4px 26px 4px 8px;
+            font-size: 11px;
+        }
+
+        .doc-row .btn {
+            padding: 6px 8px;
+            min-width: 28px;
+            min-height: 28px;
+            justify-content: center;
+        }
+
+        .doc-toggle {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .notes-editor {
+            display: none;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .notes-editor.open {
+            display: flex;
+        }
+
+        .notes-editor textarea.input-field {
+            max-width: 100%;
+            min-height: 110px;
+            resize: vertical;
+            font-family: inherit;
+            line-height: 1.4;
+        }
+
+        .notes-editor .input-field {
+            max-width: 100%;
+        }
+
+        .doc-errors {
+            font-size: 11px;
+            color: #ff8a80;
+            margin-bottom: 8px;
+            white-space: pre-line;
+        }
     </style>
 </head>
 <body>
@@ -292,6 +397,96 @@
         </div>
         
         <div class="settings-content">
+            <div class="settings-section">
+                <div class="settings-section-title">
+                    <i class="fas fa-file-alt"></i>
+                    Interview Prep Documents
+                </div>
+                <div class="settings-section-content">
+                    <div class="settings-note" style="margin-bottom: 10px;">
+                        Add your resume, the job description and your notes before the interview. Every answer uses them, so the AI talks about your real experience instead of generic examples. Files stay on this computer; their text is sent to Gemini with each question.
+                    </div>
+                    <div class="doc-actions">
+                        <button type="button" class="btn" id="addResumeButton" aria-label="Add resume file">
+                            <i class="fas fa-id-card"></i> Add resume
+                        </button>
+                        <button type="button" class="btn" id="addDocsButton" aria-label="Add other documents">
+                            <i class="fas fa-file-upload"></i> Add documents
+                        </button>
+                        <button type="button" class="btn" id="writeNotesButton" aria-label="Write notes" aria-expanded="false" aria-controls="notesEditor">
+                            <i class="fas fa-sticky-note"></i> Write notes
+                        </button>
+                    </div>
+                    <div class="notes-editor" id="notesEditor">
+                        <input type="text" class="input-field" id="notesTitle" placeholder="Title, e.g. Questions to ask, STAR stories" aria-label="Notes title">
+                        <textarea class="input-field" id="notesText" dir="auto" placeholder="Key projects, numbers to remember, how to pitch yourself, questions to ask the interviewer…" aria-label="Notes text"></textarea>
+                        <div class="doc-actions" style="margin-bottom: 0;">
+                            <button type="button" class="btn" id="saveNotesButton" aria-label="Save notes">
+                                <i class="fas fa-save"></i> Save notes
+                            </button>
+                            <button type="button" class="btn" id="cancelNotesButton" aria-label="Cancel notes">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                    <div class="doc-errors" id="docErrors" role="alert"></div>
+                    <div class="doc-list" id="docList" aria-live="polite"></div>
+                    <div class="settings-note">PDF, DOCX, TXT and MD are supported. Scanned PDFs (images only) have no text to read. Untick a document to keep it saved without using it.</div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <div class="settings-section-title">
+                    <i class="fas fa-headphones"></i>
+                    Interview Audio &amp; Languages
+                </div>
+                <div class="settings-section-content">
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Listen to</div>
+                            <div class="settings-item-description">Pick "Computer audio" or "Both" to hear the interviewer when you wear earphones</div>
+                        </div>
+                        <select class="input-field" id="audioSource">
+                            <option value="both">Microphone + computer audio</option>
+                            <option value="system">Computer audio only (interviewer)</option>
+                            <option value="mic">Microphone only</option>
+                        </select>
+                    </div>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Spoken languages</div>
+                            <div class="settings-item-description">Detected automatically for each question; only these are considered</div>
+                        </div>
+                        <input type="text" class="input-field" id="spokenLanguages" placeholder="en,fr,ar">
+                    </div>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Answer language</div>
+                            <div class="settings-item-description">Reply in the language the question was asked in, or always in one language</div>
+                        </div>
+                        <select class="input-field" id="answerLanguage">
+                            <option value="match">Same as the question</option>
+                            <option value="en">Always English</option>
+                            <option value="fr">Always French</option>
+                            <option value="ar">Always Arabic</option>
+                        </select>
+                    </div>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Answer</div>
+                            <div class="settings-item-description">Only detected questions, or everything that is said</div>
+                        </div>
+                        <select class="input-field" id="questionMode">
+                            <option value="questions">Questions only</option>
+                            <option value="all">Every sentence</option>
+                        </select>
+                    </div>
+                    <div class="settings-note">
+                        Computer audio uses Windows loopback, PulseAudio/PipeWire on Linux (<code>parec</code>), or a virtual device such as BlackHole on macOS. Changes apply the next time you start listening. Set <b>Whisper Language</b> below to <code>auto</code> for automatic detection.
+                    </div>
+                </div>
+            </div>
+
             <div class="settings-section">
                 <div class="settings-section-title">
                     <i class="fas fa-code"></i>

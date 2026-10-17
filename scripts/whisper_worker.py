@@ -97,14 +97,44 @@ def load_audio_input(audio_path):
         return audio_path
 
 
+def detect_allowed_language(loaded_model, audio, allowed):
+    """Run Whisper's language ID, keeping only the languages the user expects.
+
+    Unrestricted detection often labels accented French as Spanish or Darija
+    as Persian; picking the most probable of the allowed codes avoids that.
+    Returns (code, probabilities) or (None, {}) when detection is impossible.
+    """
+    if isinstance(audio, str):
+        audio = whisper.load_audio(audio)
+    segment = whisper.pad_or_trim(audio)
+    n_mels = getattr(loaded_model.dims, 'n_mels', 80)
+    mel = whisper.log_mel_spectrogram(segment, n_mels=n_mels).to(loaded_model.device)
+    _, probs = loaded_model.detect_language(mel)
+    candidates = {code: float(probs.get(code, 0.0)) for code in allowed if code in probs}
+    if not candidates:
+        return None, {}
+    best = max(candidates, key=candidates.get)
+    return best, candidates
+
+
 def transcribe(request):
     loaded_model, device = ensure_model(request)
     language = request.get('language') or None
     if language in ('auto', 'detect'):
         language = None
 
+    audio = load_audio_input(request['audio_path'])
+    allowed = [code for code in (request.get('allowed_languages') or []) if code]
+    language_probs = {}
+    if language is None and allowed:
+        try:
+            language, language_probs = detect_allowed_language(loaded_model, audio, allowed)
+        except Exception:
+            # Fall back to Whisper's own unrestricted detection inside transcribe().
+            language = None
+
     result = loaded_model.transcribe(
-        load_audio_input(request['audio_path']),
+        audio,
         language=language,
         task='transcribe',
         fp16=device == 'cuda',
@@ -115,6 +145,7 @@ def transcribe(request):
     return {
         'text': (result.get('text') or '').strip(),
         'language': result.get('language'),
+        'language_probs': language_probs,
         'device': device,
         'model': model_name,
         'cuda_available': torch.cuda.is_available(),

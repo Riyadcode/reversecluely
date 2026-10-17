@@ -6,7 +6,7 @@ const os = require('os');
  * First-run detection and onboarding helper.
  *
  * Responsibilities:
- *   - Decide whether this is the user's first launch of OpenCluely
+ *   - Decide whether this is the user's first launch of arlclue
  *   - Auto-create a default `.env` from `env.example` if one is missing
  *   - Report whether a Gemini API key is configured (the only required key)
  *   - Persist a "first-run completed" sentinel so we don't nag on every launch
@@ -19,7 +19,7 @@ class FirstRunManager {
   constructor(options = {}) {
     this.cwd = options.cwd || process.cwd();
     this.envPath = options.envPath || path.join(this.cwd, '.env');
-    this.sentinelPath = options.sentinelPath || path.join(this.cwd, '.opencluely-firstrun-completed');
+    this.sentinelPath = options.sentinelPath || path.join(this.cwd, '.arlclue-firstrun-completed');
     this.logger = options.logger || console;
   }
 
@@ -138,7 +138,7 @@ class FirstRunManager {
       } catch (_) { /* try next */ }
     }
     return [
-      '# OpenCluely configuration',
+      '# arlclue configuration',
       '# Add your Google Gemini API key below — the app picks it up immediately.',
       '# Get a key from: https://aistudio.google.com/',
       '',
@@ -162,6 +162,16 @@ class FirstRunManager {
       'WHISPER_MANUAL_MAX_MS=90000',
       'WHISPER_GPU_IDLE_MS=60000',
       'WHISPER_SEGMENT_MS=4000',
+      '',
+      '# arlclue: what to listen to (mic | system | both). "system"/"both" hear',
+      '# the interviewer even when you wear earphones.',
+      'AUDIO_SOURCE=both',
+      '# Languages detected automatically in the interview.',
+      'SPOKEN_LANGUAGES=en,fr,ar',
+      '# Answer language: match (same as the question) | en | fr | ar',
+      'ANSWER_LANGUAGE=match',
+      '# questions = answer only detected questions; all = answer every utterance',
+      'QUESTION_MODE=questions',
       ''
     ].join(os.EOL);
   }

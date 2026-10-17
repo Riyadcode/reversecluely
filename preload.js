@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startSpeechRecognition: () => ipcRenderer.invoke('start-speech-recognition'),
   stopSpeechRecognition: () => ipcRenderer.invoke('stop-speech-recognition'),
   sendAudioChunk: (buffer) => ipcRenderer.send('audio-chunk', { buffer }),
+  reportAudioWarning: (message) => ipcRenderer.send('audio-capture-warning', String(message || '')),
   getSpeechAvailability: () => ipcRenderer.invoke('get-speech-availability'),
   
   // Window management
@@ -31,6 +32,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendChatMessage: (text) => ipcRenderer.invoke('send-chat-message', text),
   getSkillPrompt: (skillName) => ipcRenderer.invoke('get-skill-prompt', skillName),
   
+  // Interview prep documents (resume, job description, notes)
+  listContextDocs: () => ipcRenderer.invoke('context-docs:list'),
+  addContextDocFiles: (kind) => ipcRenderer.invoke('context-docs:add-files', kind),
+  addContextDocText: (payload) => ipcRenderer.invoke('context-docs:add-text', payload),
+  updateContextDoc: (id, changes) => ipcRenderer.invoke('context-docs:update', { id, changes }),
+  removeContextDoc: (id) => ipcRenderer.invoke('context-docs:remove', id),
+  onContextDocsChanged: (callback) => ipcRenderer.on('context-docs-changed', callback),
+
   // Gemini LLM configuration
   setGeminiApiKey: (apiKey) => ipcRenderer.invoke('set-gemini-api-key', apiKey),
   getGeminiStatus: () => ipcRenderer.invoke('get-gemini-status'),

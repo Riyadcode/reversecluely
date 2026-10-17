@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenCluely</title>
+    <title>arlclue</title>
     <script src="lib/markdown.js"></script>
     <script src="lib/mathrender.js"></script>
     <style>
@@ -414,6 +414,24 @@
             background: rgba(76,175,80,0.85); 
             border-color: rgba(76,175,80,0.95); 
             transform: scale(0.98);
+        }
+        /* Right-to-left for Arabic answers, left-to-right for code. */
+        #response-content,
+        #response-content p,
+        #response-content li,
+        #text-content,
+        #text-content p,
+        #text-content li {
+            unicode-bidi: plaintext;
+        }
+
+        #response-content pre,
+        #response-content code,
+        #text-content pre,
+        #text-content code {
+            direction: ltr;
+            unicode-bidi: isolate;
+            text-align: left;
         }
     </style>
 </head>

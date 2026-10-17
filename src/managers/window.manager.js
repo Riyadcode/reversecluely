@@ -42,7 +42,7 @@ class WindowManager {
         height: 35,
         useContentSize: true,
         file: 'index.html',
-        title: 'OpenCluely'
+        title: 'arlclue'
       },
       chat: {
         width: 500,
@@ -78,7 +78,7 @@ class WindowManager {
         width: 560,
         height: 680,
         file: 'onboarding.html',
-        title: 'Welcome to OpenCluely',
+        title: 'Welcome to arlclue',
         frame: false,
         titleBarStyle: 'hidden',
         transparent: true,
@@ -1792,11 +1792,12 @@ class WindowManager {
     }
   }
 
-  handleRecordingStarted() {
+  handleRecordingStarted(details = {}) {
     this.isRecording = true;
     this.showChatWindow();
-    // Notify all windows about recording state
-    this.broadcastToAllWindows('recording-started');
+    // Notify all windows about recording state. The main overlay reads the
+    // audio source from the payload to decide which streams to capture.
+    this.broadcastToAllWindows('recording-started', details);
     logger.debug('Recording started, chat window shown');
   }
 

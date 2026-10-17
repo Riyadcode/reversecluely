@@ -47,7 +47,7 @@ jobs:
         run: npm ci
 
       # electron-builder reads `version` from package.json for artifact
-      # naming (e.g. OpenCluely-1.0.0-x64.dmg). When we build from a
+      # naming (e.g. arlclue-1.0.0-x64.dmg). When we build from a
       # git tag (v1.0.7) the package.json still says 1.0.0 by default,
       # so artifact names drift from the release tag. Sync them here.
       # `npm pkg set` is cross-platform and doesn't touch git.
@@ -98,7 +98,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: opencluely-${{ matrix.os }}
+          name: arlclue-${{ matrix.os }}
           path: ${{ matrix.artifact_glob }}
           if-no-files-found: warn
 
@@ -165,7 +165,7 @@ jobs:
             if [ -n "$PREV_TAG" ]; then
               echo "This release includes **${COMMIT_COUNT} commits** since ${PREV_TAG}."
             else
-              echo "First release of OpenCluely — **${COMMIT_COUNT} commits**."
+              echo "First release of arlclue — **${COMMIT_COUNT} commits**."
             fi
             echo ""
             cat CHANGELOG_SECTION.md
@@ -179,19 +179,19 @@ jobs:
 
           | Platform | File | Notes |
           |---|---|---|
-          | **Windows** | `OpenCluely-Setup-*.exe` | NSIS installer — installs app + adds to Start Menu |
+          | **Windows** | `arlclue-Setup-*.exe` | NSIS installer — installs app + adds to Start Menu |
           | **Linux** | `*.deb` | Debian/Ubuntu — auto-pulls system deps (Python, ffmpeg, GTK) |
           | **Linux** | `*.AppImage` | Universal — no install, just `chmod +x` and run |
 
-          > **macOS:** no pre-built build is shipped. The app is unsigned/un-notarized, so macOS Gatekeeper blocks it as "damaged". Run OpenCluely from source instead:
+          > **macOS:** no pre-built build is shipped. The app is unsigned/un-notarized, so macOS Gatekeeper blocks it as "damaged". Run arlclue from source instead:
           > ```bash
-          > git clone https://github.com/TechyCSR/OpenCluely && cd OpenCluely && ./setup.sh
+          > git clone https://github.com/riyadcode/reversecluely && cd reversecluely && ./setup.sh
           > ```
-          > Requires Node.js 18+. See the [README](https://github.com/TechyCSR/OpenCluely#quick-start) for details.
+          > Requires Node.js 18+. See the [README](https://github.com/riyadcode/reversecluely#quick-start) for details.
 
           ## First Run
 
-          On first launch, OpenCluely opens the **Settings** window automatically for your **Google Gemini API key**.
+          On first launch, arlclue opens the **Settings** window automatically for your **Google Gemini API key**.
           Get a free key from [Google AI Studio](https://aistudio.google.com/). You can also edit `.env` directly.
 
           ## Optional: Local Whisper (offline speech)
@@ -234,9 +234,9 @@ jobs:
           #   - Source archives (GitHub auto-generates these from the tag)
           #
           # The order below is the order files appear in the release page.
-          find artifacts -type f -name 'OpenCluely-Setup-*.exe' \
+          find artifacts -type f -name 'arlclue-Setup-*.exe' \
             -exec cp -v {} release/ \;
-          find artifacts -type f -name 'opencluely_*_amd64.deb' \
+          find artifacts -type f -name 'arlclue_*_amd64.deb' \
             -exec cp -v {} release/ \;
           find artifacts -type f -name '*.AppImage' \
             -exec cp -v {} release/ \;
@@ -253,7 +253,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: OpenCluely ${{ github.ref_name }}
+          name: arlclue ${{ github.ref_name }}
           draft: false
           prerelease: false
           body_path: RELEASE_BODY.md
