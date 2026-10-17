@@ -460,6 +460,12 @@ class WindowManager {
       if (/^https?:\/\//i.test(url) && url !== window.webContents.getURL()) {
         event.preventDefault();
         shell.openExternal(url);
+        return;
+      }
+      // A file dropped on a window would otherwise open in it as a page with
+      // the preload API attached. Only the app's own pages may load.
+      if (/^file:/i.test(url) && !this._isAppPageUrl(url)) {
+        event.preventDefault();
       }
     });
 
@@ -1789,6 +1795,18 @@ class WindowManager {
     if (chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.hide();
       logger.debug('Chat window hidden');
+    }
+  }
+
+  _isAppPageUrl(url) {
+    try {
+      const { fileURLToPath } = require('url');
+      const pagePath = path.resolve(fileURLToPath(url));
+      const appRoot = path.resolve(__dirname, '..', '..') + path.sep;
+      const norm = (value) => (process.platform === 'win32' ? value.toLowerCase() : value);
+      return norm(pagePath).startsWith(norm(appRoot));
+    } catch (_) {
+      return false;
     }
   }
 

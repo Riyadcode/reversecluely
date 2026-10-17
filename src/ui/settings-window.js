@@ -379,6 +379,44 @@ document.addEventListener('DOMContentLoaded', () => {
         if (cancelNotes) {
             cancelNotes.addEventListener('click', () => setNotesOpen(false));
         }
+        // Drag-and-drop from the file manager onto the prep documents section.
+        const dropZone = document.getElementById('prepDocsSection');
+        const dropHint = document.getElementById('dropHint');
+        const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+        let dragDepth = 0;
+        // Never let a drop anywhere in this window open the file as a page.
+        ['dragover', 'drop'].forEach((type) => {
+            document.addEventListener(type, (event) => event.preventDefault());
+        });
+        if (dropZone) {
+            dropZone.addEventListener('dragenter', (event) => {
+                if (!hasFiles(event)) return;
+                dragDepth += 1;
+                dropZone.classList.add('drop-active');
+            });
+            dropZone.addEventListener('dragleave', () => {
+                dragDepth = Math.max(0, dragDepth - 1);
+                if (dragDepth === 0) dropZone.classList.remove('drop-active');
+            });
+            dropZone.addEventListener('dragover', (event) => {
+                if (hasFiles(event)) event.dataTransfer.dropEffect = 'copy';
+            });
+            dropZone.addEventListener('drop', (event) => {
+                dragDepth = 0;
+                dropZone.classList.remove('drop-active');
+                const files = event.dataTransfer && event.dataTransfer.files;
+                if (!files || files.length === 0) return;
+                if (dropHint) dropHint.textContent = `Reading ${files.length} file${files.length > 1 ? 's' : ''}…`;
+                // A FileList arrives empty across the context bridge; an array of File objects doesn't.
+                window.electronAPI.addContextDocFileObjects(Array.from(files), null)
+                    .then(handleDocResult)
+                    .catch((error) => showDocErrors([error.message]))
+                    .finally(() => {
+                        if (dropHint) dropHint.innerHTML = '<i class="fas fa-file-import"></i> …or drag files from your computer and drop them here';
+                    });
+            });
+        }
+
         const saveNotes = document.getElementById('saveNotesButton');
         if (saveNotes) {
             saveNotes.addEventListener('click', () => {

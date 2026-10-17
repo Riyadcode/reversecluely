@@ -25,7 +25,8 @@ On Windows, run `setup.sh` from Git Bash. macOS has no pre-built download (the a
 Open **Settings** (`Cmd/Ctrl + ,`):
 
 **Interview Prep Documents**
-- **Add resume** picks a PDF, DOCX, TXT or MD file and files it as your resume.
+- **Add resume** picks a PDF, DOCX, HTML, TXT or MD file and files it as your resume.
+- **Drag and drop** works too: drop one or more files from Explorer/Finder onto the section.
 - **Add documents** adds more files. The type (job description, notes, other) is guessed from the file name and can be changed in the list.
 - **Write notes** is for typing notes directly: STAR stories, figures to remember, questions to ask.
 - Untick a document to keep it without using it. Documents are stored in the app's data folder (`prep-documents/`). Their text is sent to Gemini with each question.
@@ -107,6 +108,7 @@ New code:
 ## Limitations
 
 - Screen-capture invisibility only works on macOS and Windows. Electron has no equivalent on Linux, so the overlay is visible in a Linux screen share.
+- HTML files are read as text (scripts, styles and layout are dropped). A page saved from a website that loads its content with JavaScript may contain little text; copy the text into **Write notes** instead.
 - Scanned PDFs (images only) contain no text to extract. Export them with OCR first.
 - Question detection uses heuristics (question marks, interrogative words, prompts such as "tell me about"). If one is missed, switch **Answer** to "Every sentence" or type the question into the chat.
 

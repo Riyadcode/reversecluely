@@ -518,6 +518,21 @@ class ApplicationController {
       return docs;
     };
 
+    const addFiles = async (filePaths, kind) => {
+      const errors = [];
+      for (const filePath of filePaths) {
+        try {
+          if (!fs.statSync(filePath).isFile()) {
+            throw new Error("Folders are not supported; drop the files themselves");
+          }
+          await contextDocs.addFile(filePath, kind || null);
+        } catch (error) {
+          errors.push(`${path.basename(filePath)}: ${error.message}`);
+        }
+      }
+      return errors;
+    };
+
     ipcMain.handle("context-docs:list", () => contextDocs.list());
 
     ipcMain.handle("context-docs:add-files", async (event, kind) => {
@@ -530,15 +545,21 @@ class ApplicationController {
           { name: "All files", extensions: ["*"] }
         ]
       });
-      const errors = [];
-      if (!result.canceled) {
-        for (const filePath of result.filePaths) {
-          try {
-            await contextDocs.addFile(filePath, kind || null);
-          } catch (error) {
-            errors.push(`${path.basename(filePath)}: ${error.message}`);
-          }
-        }
+      const errors = result.canceled ? [] : await addFiles(result.filePaths, kind);
+      return { docs: send(contextDocs.list()), errors };
+    });
+
+    // Files dragged onto the Settings window. The renderer resolves each
+    // dropped File to its path; only regular files are read, and the
+    // service rejects unsupported extensions.
+    ipcMain.handle("context-docs:add-paths", async (_event, payload = {}) => {
+      const paths = Array.isArray(payload.paths) ? payload.paths : [];
+      const valid = paths
+        .filter((p) => typeof p === "string" && path.isAbsolute(p))
+        .slice(0, 20);
+      const errors = await addFiles(valid, payload.kind);
+      if (paths.length > valid.length) {
+        errors.push(paths.length > 20 ? "Only the first 20 files were added." : "Some dropped items could not be read.");
       }
       return { docs: send(contextDocs.list()), errors };
     });

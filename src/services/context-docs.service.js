@@ -30,7 +30,47 @@ const MAX_DOC_CHARS = 40000;
 const MAX_CONTEXT_CHARS = 60000;
 
 const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.markdown', '.text', '.csv', '.json', '.rtf']);
-const SUPPORTED_EXTENSIONS = new Set([...TEXT_EXTENSIONS, '.pdf', '.docx']);
+const HTML_EXTENSIONS = new Set(['.html', '.htm', '.xhtml']);
+const SUPPORTED_EXTENSIONS = new Set([...TEXT_EXTENSIONS, ...HTML_EXTENSIONS, '.pdf', '.docx']);
+
+const NAMED_ENTITIES = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ndash: '–', mdash: '—',
+  hellip: '…', laquo: '«', raquo: '»', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”',
+  bull: '•', middot: '·', euro: '€', copy: '©', reg: '®', deg: '°', times: '×',
+  eacute: 'é', egrave: 'è', ecirc: 'ê', euml: 'ë', aacute: 'á', agrave: 'à', acirc: 'â',
+  ccedil: 'ç', icirc: 'î', iuml: 'ï', ocirc: 'ô', ouml: 'ö', ugrave: 'ù', ucirc: 'û',
+  uuml: 'ü', oelig: 'œ', Eacute: 'É', Egrave: 'È', Agrave: 'À', Ccedil: 'Ç'
+};
+
+/**
+ * Plain text from an HTML page (a resume exported as a web page, a saved
+ * job posting, notes from an editor). Scripts, styles and markup are
+ * dropped; block elements become line breaks so structure survives.
+ */
+function htmlToText(html) {
+  return String(html)
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(script|style|noscript|template|svg|head)\b[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<li\b[^>]*>/gi, '\n- ')
+    .replace(/<(td|th)\b[^>]*>/gi, ' ')
+    .replace(/<\/?(p|div|section|article|header|footer|main|aside|nav|h[1-6]|li|tr|table|ul|ol|dl|dt|dd|blockquote|pre|hr)\b[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#x([0-9a-f]+);/gi, (m, hex) => safeCodePoint(parseInt(hex, 16), m))
+    .replace(/&#(\d+);/g, (m, dec) => safeCodePoint(parseInt(dec, 10), m))
+    .replace(/&([a-z]+);/gi, (m, name) => (name in NAMED_ENTITIES ? NAMED_ENTITIES[name] : m))
+    .split('\n')
+    .map((line) => line.replace(/[ \t\u00a0]+/g, ' ').trim())
+    .join('\n');
+}
+
+function safeCodePoint(code, fallback) {
+  try {
+    return String.fromCodePoint(code);
+  } catch (_) {
+    return fallback;
+  }
+}
 
 class ContextDocsService {
   constructor() {
@@ -69,7 +109,7 @@ class ContextDocsService {
   async addFile(filePath, kind) {
     const ext = path.extname(filePath).toLowerCase();
     if (!SUPPORTED_EXTENSIONS.has(ext)) {
-      throw new Error(`Unsupported file type ${ext || '(none)'}. Use PDF, DOCX, TXT or MD.`);
+      throw new Error(`Unsupported file type ${ext || '(none)'}. Use PDF, DOCX, HTML, TXT or MD.`);
     }
     const stat = fs.statSync(filePath);
     if (stat.size > MAX_FILE_BYTES) {
@@ -213,6 +253,9 @@ ${sections.join('\n\n')}`;
       const result = await pdfParse(fs.readFileSync(filePath));
       return result.text || '';
     }
+    if (HTML_EXTENSIONS.has(ext)) {
+      return htmlToText(fs.readFileSync(filePath, 'utf8'));
+    }
     if (ext === '.docx') {
       const mammoth = require('mammoth');
       const result = await mammoth.extractRawText({ path: filePath });
@@ -257,3 +300,4 @@ ${sections.join('\n\n')}`;
 
 module.exports = new ContextDocsService();
 module.exports.ContextDocsService = ContextDocsService;
+module.exports.htmlToText = htmlToText;

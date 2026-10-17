@@ -205,3 +205,28 @@ sleep 5
     speech.shutdown();
   }
 });
+
+test('prep documents: HTML files are read as clean text', async () => {
+  const { htmlToText } = require('../src/services/context-docs.service');
+  const text = htmlToText(`<!doctype html><html><head><title>CV</title><style>p{color:red}</style></head>
+    <body><h1>Riyad L.</h1><p>Consultant SAP FI &amp; CO &ndash; Casablanca</p>
+    <ul><li>S/4HANA&nbsp;migration</li><li>R&eacute;duction de 30&#37;</li></ul>
+    <script>alert("x")</script><p dir="rtl">مستشار &#x0645;</p></body></html>`);
+  assert.match(text, /Riyad L\./);
+  assert.match(text, /Consultant SAP FI & CO – Casablanca/);
+  assert.match(text, /- S\/4HANA migration/);
+  assert.match(text, /Réduction de 30%/);
+  assert.match(text, /مستشار م/);
+  assert.doesNotMatch(text, /alert|color:red|<|CV/);
+
+  const dir = tmpDir('arlclue-html-');
+  const docs = new ContextDocsService();
+  docs.init(dir);
+  const file = path.join(dir, 'mon-cv.html');
+  fs.writeFileSync(file, '<html><body><p>Consultant SAP <b>FI</b></p></body></html>');
+  await docs.addFile(file);
+  const [doc] = docs.list();
+  assert.equal(doc.kind, 'resume');
+  assert.match(docs.buildContextBlock(), /Consultant SAP FI/);
+  assert.ok(docs.getSupportedExtensions().includes('html'));
+});

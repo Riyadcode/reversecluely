@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
@@ -36,6 +36,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listContextDocs: () => ipcRenderer.invoke('context-docs:list'),
   addContextDocFiles: (kind) => ipcRenderer.invoke('context-docs:add-files', kind),
   addContextDocText: (payload) => ipcRenderer.invoke('context-docs:add-text', payload),
+  // Drag-and-drop: the renderer passes an array of File objects (a FileList
+  // arrives empty across the bridge); resolve their disk paths here with
+  // webUtils (Electron 29+), falling back to the older File.path.
+  addContextDocFileObjects: (files, kind) => {
+    const paths = Array.from(files || []).map((file) => {
+      try {
+        return (webUtils && webUtils.getPathForFile(file)) || file.path || '';
+      } catch (_) {
+        return file.path || '';
+      }
+    });
+    return ipcRenderer.invoke('context-docs:add-paths', { paths, kind: kind || null });
+  },
   updateContextDoc: (id, changes) => ipcRenderer.invoke('context-docs:update', { id, changes }),
   removeContextDoc: (id) => ipcRenderer.invoke('context-docs:remove', id),
   onContextDocsChanged: (callback) => ipcRenderer.on('context-docs-changed', callback),
