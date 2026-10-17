@@ -340,6 +340,18 @@
             justify-content: center;
         }
 
+        .doc-badge {
+            display: inline-block;
+            margin-left: 6px;
+            padding: 0 5px;
+            border-radius: 4px;
+            font-size: 9px;
+            font-weight: 600;
+            vertical-align: middle;
+            background: rgba(76, 175, 80, 0.4);
+            color: #fff;
+        }
+
         .doc-toggle {
             width: 16px;
             height: 16px;
@@ -445,6 +457,12 @@
                         <button type="button" class="btn" id="writeNotesButton" aria-label="Write notes" aria-expanded="false" aria-controls="notesEditor">
                             <i class="fas fa-sticky-note"></i> Write notes
                         </button>
+                        <button type="button" class="btn" id="openPrepFolderButton" aria-label="Open the prep folder">
+                            <i class="fas fa-folder-open"></i> Prep folder
+                        </button>
+                        <button type="button" class="btn" id="reloadPrepFolderButton" aria-label="Reload files from the prep folder">
+                            <i class="fas fa-sync-alt"></i> Reload
+                        </button>
                     </div>
                     <div class="drop-hint" id="dropHint"><i class="fas fa-file-import"></i> …or drag files from your computer and drop them here</div>
                     <div class="notes-editor" id="notesEditor">
@@ -461,7 +479,7 @@
                     </div>
                     <div class="doc-errors" id="docErrors" role="alert"></div>
                     <div class="doc-list" id="docList" aria-live="polite"></div>
-                    <div class="settings-note">PDF, DOCX, HTML, TXT and MD are supported. Scanned PDFs (images only) have no text to read. Untick a document to keep it saved without using it.</div>
+                    <div class="settings-note">PDF, DOCX, HTML, TXT and MD are supported. Files in the <b>prep folder</b> are built in: loaded at every start, never uploaded to GitHub. Short documents are sent whole; long ones are searched and only the passages relevant to each question are sent. Untick a document to keep it without using it.</div>
                 </div>
             </div>
 

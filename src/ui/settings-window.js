@@ -305,7 +305,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const meta = document.createElement('div');
             meta.className = 'doc-meta';
             const size = doc.chars >= 1000 ? `${Math.round(doc.chars / 1000)}k chars` : `${doc.chars} chars`;
-            meta.textContent = doc.truncated ? `${size} · trimmed to fit` : size;
+            const how = doc.mode === 'excerpts' ? 'relevant passages per question' : 'sent in full';
+            meta.textContent = `${size} · ${how}${doc.truncated ? ' · trimmed to fit' : ''}`;
+            if (doc.builtIn) {
+                // On the meta line so a long file name can't push it out of view.
+                const badge = document.createElement('span');
+                badge.className = 'doc-badge';
+                badge.textContent = 'BUILT-IN';
+                badge.title = 'From the prep folder';
+                meta.prepend(badge, ' ');
+                badge.style.marginLeft = '0';
+            }
             main.append(name, meta);
 
             const kind = document.createElement('select');
@@ -331,7 +341,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.electronAPI.removeContextDoc(doc.id).then(handleDocResult);
             });
 
-            row.append(toggle, main, kind, remove);
+            // Built-in documents mirror a file in the prep folder: they are
+            // removed by deleting the file, and their type comes from its name.
+            if (doc.builtIn) {
+                kind.disabled = true;
+                row.append(toggle, main, kind);
+            } else {
+                row.append(toggle, main, kind, remove);
+            }
             docList.appendChild(row);
         });
     };
@@ -356,6 +373,21 @@ document.addEventListener('DOMContentLoaded', () => {
         window.electronAPI.onContextDocsChanged((_event, data) => {
             if (data && data.docs) renderDocs(data.docs);
         });
+
+        const openFolder = document.getElementById('openPrepFolderButton');
+        if (openFolder) {
+            openFolder.addEventListener('click', () => {
+                window.electronAPI.openPrepFolder().then((result) => {
+                    if (result && result.error) showDocErrors([`Prep folder: ${result.folder} (${result.error})`]);
+                });
+            });
+        }
+        const reloadFolder = document.getElementById('reloadPrepFolderButton');
+        if (reloadFolder) {
+            reloadFolder.addEventListener('click', () => {
+                window.electronAPI.reloadPrepFolder().then(handleDocResult);
+            });
+        }
 
         const addResume = document.getElementById('addResumeButton');
         if (addResume) {

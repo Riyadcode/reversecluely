@@ -157,6 +157,9 @@ def transcribe(request):
         verbose=None,
         temperature=0,
         condition_on_previous_text=False,
+        # Utterances are short and timestamps are never used: skipping them
+        # makes greedy decoding a little faster.
+        without_timestamps=True,
     )
     return {
         'text': (result.get('text') or '').strip(),

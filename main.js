@@ -149,6 +149,21 @@ class ApplicationController {
     } catch (error) {
       logger.error("Failed to initialise prep documents", { error: error.message });
     }
+    // Built-in prep documents: every file in this folder is known from the
+    // first launch. In a source checkout it is <repo>/prep (git-ignored, so a
+    // resume never ends up in the repository); in a packaged app it lives in
+    // userData because the app bundle is read-only.
+    this.prepFolder = app.isPackaged
+      ? path.join(app.getPath("userData"), "prep")
+      : path.join(__dirname, "prep");
+    try {
+      fs.mkdirSync(this.prepFolder, { recursive: true });
+    } catch (error) {
+      logger.warn("Could not create prep folder", { folder: this.prepFolder, error: error.message });
+    }
+    this.prepDocsReady = contextDocs.loadFolder(this.prepFolder).catch((error) => {
+      logger.error("Failed to load built-in prep documents", { error: error.message });
+    });
     // Lazily-initialised in getWhisperInstaller() so tests can mock
     // the constructor without polluting main-process startup.
     this._whisperInstaller = null;
@@ -547,7 +562,23 @@ class ApplicationController {
       return errors;
     };
 
-    ipcMain.handle("context-docs:list", () => contextDocs.list());
+    ipcMain.handle("context-docs:list", async () => {
+      await this.prepDocsReady;
+      return contextDocs.list();
+    });
+
+    ipcMain.handle("context-docs:open-folder", async () => {
+      const { shell } = require("electron");
+      await this.prepDocsReady;
+      const error = await shell.openPath(this.prepFolder);
+      return { folder: this.prepFolder, error: error || null };
+    });
+
+    // Re-read the prep folder after files were added or changed in it.
+    ipcMain.handle("context-docs:reload-folder", async () => {
+      this.prepDocsReady = contextDocs.loadFolder(this.prepFolder);
+      return { docs: send(await this.prepDocsReady), errors: [] };
+    });
 
     ipcMain.handle("context-docs:add-files", async (event, kind) => {
       const parent = BrowserWindow.fromWebContents(event.sender) || undefined;
@@ -1409,10 +1440,13 @@ class ApplicationController {
       return;
     }
 
+    // A fragment that is clearly a question goes out almost at once; anything
+    // else waits a little in case the rest of the sentence follows.
+    const delay = isLikelyQuestion(this._utteranceBuffer, language) ? 250 : this._utteranceCoalesceMs;
     this._utteranceTimer = setTimeout(() => {
       this._utteranceTimer = null;
       this.dispatchCoalescedUtterance();
-    }, this._utteranceCoalesceMs);
+    }, delay);
   }
 
   /**

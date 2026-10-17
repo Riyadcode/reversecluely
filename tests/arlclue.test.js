@@ -254,3 +254,100 @@ test('polite requests count as questions (regression: "j\'aimerais que vous me p
     assert.equal(language.isLikelyQuestion(text), false, text);
   }
 });
+
+test('long prep guides are searched per question; short ones are sent whole', async () => {
+  const { chunkDocument, ChunkIndex } = require('../src/core/retrieval');
+  // A synthetic coaching guide shaped like a real one: sections, questions
+  // with tags glued on, prepared answers, padded to well over 15k chars.
+  const filler = Array.from({ length: 200 }, (_, i) =>
+    `Question annexe ${i} sur la fiscalité ?\nRéponse annexe ${i} : détail sans rapport avec le reste, TVA, IS, IR, liasse.`).join('\n\n');
+  const guide = `ÉTAPE 3
+Ton pitch
+
+Version française · 75 à 90 secondes
+
+Je m'appelle Sara, je suis en dernière année à l'ISCAE.
+
+ÉTAPE 8
+Immobilisations
+
+Peut-on amortir un terrain ?Fréquent
+
+Non : un terrain ne se déprécie pas par l'usage ou le temps.
+
+Tell me about a challenge and how you overcame it. (exemple 1 : adoption)EN
+
+During my internship at Acme, the main challenge was getting people to use the new system.
+
+${filler}`;
+  const chunks = chunkDocument(guide);
+  assert.ok(chunks.some((c) => c.section.startsWith('ÉTAPE 8') && /^Peut-on amortir un terrain/.test(c.text)));
+  assert.ok(chunks.some((c) => /^Tell me about a challenge/.test(c.text)), 'tag-suffixed question starts a chunk');
+
+  const index = new ChunkIndex(chunks.map((c, seq) => ({ ...c, doc: 'g', docName: 'Guide', seq })));
+  assert.match(index.search('Peut-on amortir un terrain ?', { limit: 1 })[0].text, /ne se déprécie pas/);
+  assert.match(index.search('tell me about a challenge during your internship', { limit: 1 })[0].text, /Acme/);
+  // Intent expansion: no shared keywords with "Ton pitch".
+  const pitch = index.search("j'aimerais que vous me parliez un peu de vous", { limit: 2, neighbors: 1 });
+  assert.ok(pitch.some((h) => /Je m'appelle Sara/.test(h.text)), 'pitch found for a "parlez de vous" request');
+
+  // The service: folder documents are built in, long ones become excerpts.
+  const folder = tmpDir('arlclue-prep-');
+  fs.writeFileSync(path.join(folder, 'CV_Sara.md'), 'Sara - consultante SAP FI, ISCAE.');
+  fs.writeFileSync(path.join(folder, 'Guide_entretien.html'), `<html><body><pre>${guide}</pre></body></html>`);
+  fs.writeFileSync(path.join(folder, 'README.md'), 'not a prep document');
+  const docs = new ContextDocsService();
+  docs.init(tmpDir('arlclue-store-'));
+  await docs.loadFolder(folder);
+  const list = docs.list();
+  assert.deepEqual(list.map((d) => [d.name, d.kind, d.mode, d.builtIn]), [
+    ['CV_Sara.md', 'resume', 'full', true],
+    ['Guide_entretien.html', 'notes', 'excerpts', true]
+  ]);
+  assert.throws(() => docs.remove(list[0].id), /prep folder/);
+
+  const block = docs.buildContextBlock({ query: 'Peut-on amortir un terrain ?' });
+  assert.match(block, /consultante SAP FI/, 'resume always included');
+  assert.match(block, /ne se déprécie pas/, 'matching passage included');
+  assert.ok(block.length < guide.length, 'the whole guide is not sent');
+  assert.doesNotMatch(docs.buildContextBlock(), /ne se déprécie pas/, 'no passages without a question');
+
+  // Switching a built-in off is remembered across restarts.
+  docs.update(list[1].id, { enabled: false });
+  const again = new ContextDocsService();
+  again.init(docs.dir);
+  await again.loadFolder(folder);
+  assert.equal(again.list().find((d) => d.name === 'Guide_entretien.html').enabled, false);
+});
+
+test('follow-up questions reuse the previous question to find passages', () => {
+  const llm = require('../src/services/llm.service');
+  const contextDocs = require('../src/services/context-docs.service');
+  contextDocs.init(tmpDir('arlclue-follow-'));
+  const seen = [];
+  llm._previousQuery = null;
+  const original = contextDocs.buildContextBlock.bind(contextDocs);
+  contextDocs.buildContextBlock = (opts) => { seen.push(opts.query); return original(opts); };
+  try {
+    llm.applyCandidateContext({ contents: [] }, { text: 'Peut-on amortir un terrain ?' });
+    llm.applyCandidateContext({ contents: [] }, { text: 'Comment ?' });
+    // Typed chat messages: the query comes from the last user turn.
+    llm.applyCandidateContext({ contents: [{ role: 'user', parts: [{ text: 'Différence entre VNC et VNA, avec un exemple chiffré concret' }] }] });
+  } finally {
+    contextDocs.buildContextBlock = original;
+  }
+  assert.equal(seen[0], 'Peut-on amortir un terrain ?');
+  assert.match(seen[1], /^Comment \? Peut-on amortir un terrain/);
+  assert.match(seen[2], /VNC et VNA/);
+});
+
+test('PDFs still parse after the speech service installs its window polyfill', async () => {
+  // Regression: pdf.js saw the Azure SDK's fake `window` and crashed with
+  // "HTMLElement is not defined", so every PDF failed inside the app.
+  require('../src/services/speech.service');
+  assert.notEqual(typeof window, 'undefined', 'polyfill present, as in the app');
+  const docs = new ContextDocsService();
+  docs.init(tmpDir('arlclue-pdfpoly-'));
+  await docs.addFile(path.join(FIXTURES, 'job-description.pdf'));
+  assert.match(docs.buildContextBlock(), /Junior SAP consultant in Casablanca/);
+});

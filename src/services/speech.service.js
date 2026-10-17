@@ -717,6 +717,7 @@ class SpeechService extends EventEmitter {
     this.emit('status', 'Local Whisper recording started');
 
     if (this.whisperWorker.isConfigured()) {
+      this.whisperWorker.setKeepAlive(true);
       this.whisperWorker.warmup({
         model: this._getWhisperModel(),
         modelDir: this._getWhisperModelDir(),
@@ -1174,6 +1175,7 @@ class SpeechService extends EventEmitter {
     } finally {
       this._cleanup();
       this.isProcessingAudio = false;
+      this.whisperWorker.setKeepAlive(false);
       this.whisperWorker.releaseWhenIdle();
       if (!captureAlreadyStopped) {
         this.emit('recording-stopped');

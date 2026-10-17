@@ -52,6 +52,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   updateContextDoc: (id, changes) => ipcRenderer.invoke('context-docs:update', { id, changes }),
   removeContextDoc: (id) => ipcRenderer.invoke('context-docs:remove', id),
+  openPrepFolder: () => ipcRenderer.invoke('context-docs:open-folder'),
+  reloadPrepFolder: () => ipcRenderer.invoke('context-docs:reload-folder'),
   onContextDocsChanged: (callback) => ipcRenderer.on('context-docs-changed', callback),
 
   // Gemini LLM configuration

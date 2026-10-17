@@ -63,12 +63,14 @@
       "!bin/**/*",
       "!scripts/__pycache__/**/*",
       "!**/*.pyc",
-      "!eng.traineddata"
+      "!eng.traineddata",
+      "!prep/**/*"
     ],
     "asarUnpack": [
       "assests/icons/**/*",
       "prompts/**/*",
-      "scripts/whisper_worker.py"
+      "scripts/whisper_worker.py",
+      "node_modules/pdf-parse/**/*"
     ],
     "mac": {
       "category": "public.app-category.utilities",

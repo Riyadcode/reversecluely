@@ -7,3 +7,7 @@ dist/
 bin/
 .DS_Store
 *.log
+
+# Personal interview prep (resume, guides): stays on this computer only.
+prep/*
+!prep/README.md

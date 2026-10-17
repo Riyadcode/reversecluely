@@ -4,6 +4,7 @@ const config = require('../core/config');
 const { promptLoader } = require('../../prompt-loader');
 const contextDocs = require('./context-docs.service');
 const { buildAnswerLanguageInstruction, guessLanguageFromText } = require('../core/language');
+const { tokenize } = require('../core/retrieval');
 
 class LLMService {
   constructor() {
@@ -30,9 +31,18 @@ class LLMService {
     }
     this._contextApplied.add(geminiRequest);
 
-    const language = spokenLanguage || (text ? guessLanguageFromText(text) : null);
+    const query = text || this._lastUserText(geminiRequest);
+    const language = spokenLanguage || (query ? guessLanguageFromText(query) : null);
+    // Follow-ups like "Comment ?" or "Et ensuite ?" carry no keywords, so the
+    // previous question is added to the passage search.
+    const searchQuery = query && tokenize(query).length < 2 && this._previousQuery
+      ? `${query} ${this._previousQuery}`
+      : query;
+    if (query) {
+      this._previousQuery = query;
+    }
     const additions = [
-      contextDocs.buildContextBlock(),
+      contextDocs.buildContextBlock({ query: searchQuery || '' }),
       buildAnswerLanguageInstruction(language, process.env.ANSWER_LANGUAGE || 'match')
     ].filter(Boolean);
 
@@ -811,11 +821,12 @@ class LLMService {
   }
 
   getIntelligentTranscriptionPrompt(activeSkill, programmingLanguage) {
-    let prompt = `# Intelligent Transcription Response System
+    const skill = String(activeSkill || 'general').toUpperCase();
+    let prompt = `# Live interview answer assistant
 
-Assume you are asked a question in ${activeSkill.toUpperCase()} mode. Your job is to intelligently respond to question/message with appropriate brevity.
-Assume you are in an interview and you need to perform best in ${activeSkill.toUpperCase()} mode.
-Always respond to the point, do not repeat the question or unnecessary information which is not related to ${activeSkill}.`;
+You help a candidate during a live job interview. The text you receive was spoken by the interviewer (or by the candidate) and transcribed automatically, so it may contain recognition errors: infer the intended question. The candidate reads your answer on screen while the interviewer waits, so the first line matters most.
+
+The default technical focus is ${skill}, but answer every interview question whatever its field: questions about the candidate, finance and accounting, SAP and ERP, programming, business cases, soft skills.`;
 
     // Add programming language context if provided
     if (programmingLanguage) {
@@ -824,54 +835,40 @@ Always respond to the point, do not repeat the question or unnecessary informati
       const fenceTagMap = { cpp: 'cpp', c: 'c', python: 'python', java: 'java', javascript: 'javascript', js: 'javascript' };
       const languageTitle = languageMap[lang] || (lang.charAt(0).toUpperCase() + lang.slice(1));
       const fenceTag = fenceTagMap[lang] || lang || 'text';
-      prompt += `\n\nCODING CONTEXT: Respond ONLY in ${languageTitle}. All code blocks must use triple backticks with language tag \`\`\`${fenceTag}\`\`\`. Do not include other languages unless explicitly asked.`;
+      prompt += `\n\nCODING CONTEXT: when the question asks for code, write it ONLY in ${languageTitle}, in blocks tagged \`\`\`${fenceTag}\`\`\`.`;
     }
 
     prompt += `
 
-## Response Rules:
+## Answer format
+- Line 1, in bold: a direct answer of one or two sentences the candidate can say right away.
+- Then 3 to 5 short bullet points: the facts, figures, steps or examples to add if the interviewer asks "comment ?" / "how?".
+- Questions about the candidate (background, projects, motivation, "tell me about yourself", strengths, weaknesses, STAR stories): answer in the first person, in a natural spoken style, as the candidate would say it, using the candidate background below. About 60 to 90 seconds when read aloud.
+- Technical questions: precise and correct; give the definition, the accounting entry or the SAP transaction when relevant. If unsure, say what you know rather than inventing.
+- Coding problems with no code given: brief approach, then a complete, runnable solution in a tagged code block.
+- No preamble, do not repeat the question, no closing remarks.
 
-### Questions about the candidate are ALWAYS relevant, whatever the mode:
-- Background, experience, projects, education, motivation, strengths/weaknesses, salary, availability, "tell me about yourself", "why this company/role", situational and behavioral (STAR) questions, and questions about the role or company.
-- Answer them in the first person, as the candidate would say it aloud, using the candidate background below when it is provided. Keep it natural and concise (about 4-8 sentences, or a short STAR structure).
-
-### If the transcription is casual conversation, greetings, or NOT related to ${activeSkill} (and not a question about the candidate):
-- Respond with: "Yeah, I'm listening. Ask your question relevant to ${activeSkill}."
-- Or similar brief acknowledgments like: "I'm here, what's your ${activeSkill} question?"
-
-### If the transcription IS relevant to ${activeSkill} or is a follow-up question:
-- Provide a comprehensive, detailed response
-- Use bullet points, examples, and explanations
-- Focus on actionable insights and complete answers
-- Do not truncate or shorten your response
-
-### Examples of casual/irrelevant messages:
-- "Hello", "Hi there", "How are you?", "Bonjour, ça va ?", "السلام عليكم"
-- "What's the weather like?"
-- "I'm just testing this"
-- Random conversations not related to ${activeSkill} that are not questions about the candidate
-
-### Examples of relevant messages:
-- Actual questions about ${activeSkill} concepts
-- Follow-up questions to previous responses
-- Requests for clarification on ${activeSkill} topics
-- Problem-solving requests related to ${activeSkill}
-
-## Response Format:
-- Keep responses detailed
-- Use bullet points for structured answers
-- Be encouraging and helpful
-- Stay focused on ${activeSkill}
-
-If the user's input is a coding or DSA problem statement and contains no code, produce a complete, runnable solution in the selected programming language without asking for more details. Always include the final implementation in a properly tagged code block.
-
-Remember: Be intelligent about filtering - only provide detailed responses when the user actually needs help with ${activeSkill}.`;
+## Not a question
+For greetings, small talk or remarks that need no answer ("Bonjour", "vous m'entendez ?", "merci", "OK, très bien"), reply with one short line the candidate could say, nothing else.`;
 
     return prompt;
   }
 
   formatUserMessage(text, activeSkill) {
     return `Context: ${activeSkill.toUpperCase()} analysis request\n\nText to analyze:\n${text}`;
+  }
+
+  /** Text of the last user turn in a request, used to search the prep guides. */
+  _lastUserText(geminiRequest) {
+    const contents = Array.isArray(geminiRequest.contents) ? geminiRequest.contents : [];
+    for (let i = contents.length - 1; i >= 0; i--) {
+      const turn = contents[i];
+      if (turn && turn.role === 'user' && Array.isArray(turn.parts)) {
+        const text = turn.parts.map((p) => (typeof p.text === 'string' ? p.text : '')).join(' ').trim();
+        if (text) return text.slice(0, 2000);
+      }
+    }
+    return '';
   }
 
   async executeRequest(geminiRequest) {

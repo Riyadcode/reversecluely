@@ -74,6 +74,18 @@ class WhisperWorkerService {
     }
   }
 
+  /**
+   * Keep the model in memory while a listening session is active. Without
+   * this, a minute without transcription (the interviewer listening to a long
+   * answer) unloaded the model and the next question paid a full reload.
+   */
+  setKeepAlive(keepAlive) {
+    this.keepAlive = !!keepAlive;
+    if (this.keepAlive) {
+      this._clearIdleTimer();
+    }
+  }
+
   _ensureProcess() {
     if (this.process && !this.process.killed) {
       return;
@@ -173,8 +185,11 @@ class WhisperWorkerService {
 
   _scheduleIdleUnload() {
     this._clearIdleTimer();
+    if (this.keepAlive) {
+      return;
+    }
     this.idleTimer = setTimeout(() => {
-      if (!this.process || this.pending.size > 0) {
+      if (!this.process || this.pending.size > 0 || this.keepAlive) {
         return;
       }
       this._request({ action: 'unload' }, 30000)

@@ -24,6 +24,10 @@ On Windows, run `setup.sh` from Git Bash. macOS has no pre-built download (the a
 
 Open **Settings** (`Cmd/Ctrl + ,`):
 
+**Built-in documents: the `prep/` folder.** Copy your resume, guides and notes into the `prep/` folder of the app (Settings → **Prep folder** opens it). Every file there is loaded at each start, so arlclue knows it from the first question. The folder is git-ignored, so these files are never committed or pushed. After adding a file while the app is open, click **Reload**.
+
+Short documents (a resume) are sent whole with each question. Long ones (a 100-page interview or technical guide) are searched, and only the passages that match the question are sent, along with the previous question for short follow-ups like "Comment ?". The model knows the whole guide without a huge prompt slowing every answer down.
+
 **Interview Prep Documents**
 - **Add resume** picks a PDF, DOCX, HTML, TXT or MD file and files it as your resume.
 - **Drag and drop** works too: drop one or more files from Explorer/Finder onto the section.
@@ -53,6 +57,13 @@ Then press `Alt + R` to start listening.
 If system audio is unavailable, arlclue shows a warning in the chat and falls back to the microphone.
 
 "Microphone + computer audio" is meant for earphones. On loudspeakers the microphone also picks up the interviewer, so choose **Computer audio only** there.
+
+### Faster answers
+
+- Answers start with one bold sentence you can say straight away, then a few bullet points for the follow-up "comment ?".
+- A fragment that is clearly a question is sent after 0.25 s instead of 0.8 s.
+- The Whisper model stays loaded for the whole listening session instead of unloading after a minute of silence.
+- Transcription is the slowest step without an NVIDIA GPU. If it lags, set **Whisper Model** to `base`, or use Azure Speech, which transcribes while the interviewer is still speaking.
 
 ### How language detection works
 
