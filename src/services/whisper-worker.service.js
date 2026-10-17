@@ -47,6 +47,7 @@ class WhisperWorkerService {
       model: options.model || 'small',
       language: options.language || 'auto',
       allowed_languages: options.allowedLanguages || [],
+      prefer_language: options.preferLanguage || null,
       model_dir: options.modelDir || null,
       device: options.device || 'auto'
     });
@@ -82,7 +83,9 @@ class WhisperWorkerService {
     this.closing = false;
     const child = spawn(this.pythonPath, ['-u', this.scriptPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true
+      windowsHide: true,
+      // UTF-8 pipes on Windows, where Python otherwise uses cp1252.
+      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
     });
     this.process = child;
 

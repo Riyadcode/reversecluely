@@ -700,6 +700,32 @@
         vertical-align: middle;
       }
 
+      .answer-anyway {
+        margin-left: 8px;
+        padding: 4px 10px;
+        min-height: 26px;
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        border-radius: 6px;
+        background: rgba(76, 175, 80, 0.45);
+        color: #fff;
+        font-size: 11px;
+        cursor: pointer;
+      }
+
+      .answer-anyway:hover:not(:disabled) {
+        background: rgba(76, 175, 80, 0.7);
+      }
+
+      .answer-anyway:focus-visible {
+        outline: 2px solid #fff;
+        outline-offset: 2px;
+      }
+
+      .answer-anyway:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
       .lang-tag.question {
         background: rgba(76, 175, 80, 0.35);
       }
@@ -1218,9 +1244,31 @@
           }
         });
 
-        whysperAPI.receive('transcription-skipped', () => {
+        whysperAPI.receive('transcription-skipped', (event, data) => {
           hideThinkingIndicator();
           setTimeout(hideThinkingIndicator, 600);
+          if (!data || !data.text || !chatMessages) return;
+          // The detector can miss a question; offer a one-click answer.
+          addMessage('Not detected as a question.', 'system', true);
+          const note = chatMessages.lastElementChild;
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'answer-anyway';
+          button.textContent = 'Answer anyway';
+          button.setAttribute('aria-label', 'Answer this anyway');
+          button.addEventListener('click', () => {
+            button.disabled = true;
+            button.textContent = 'Answering…';
+            showThinkingIndicator();
+            whysperAPI.answerUtterance(data.text, data.language || null)
+              .then(() => note && note.remove())
+              .catch(() => {
+                hideThinkingIndicator();
+                button.disabled = false;
+                button.textContent = 'Answer anyway';
+              });
+          });
+          if (note) note.querySelector('.message-text').appendChild(button);
         });
 
         whysperAPI.onInterimTranscription((event, data) => {

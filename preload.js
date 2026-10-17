@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearSessionMemory: () => ipcRenderer.invoke('clear-session-memory'),
   formatSessionHistory: () => ipcRenderer.invoke('format-session-history'),
   sendChatMessage: (text) => ipcRenderer.invoke('send-chat-message', text),
+  answerUtterance: (text, language) => ipcRenderer.invoke('answer-utterance', { text, language }),
   getSkillPrompt: (skillName) => ipcRenderer.invoke('get-skill-prompt', skillName),
   
   // Interview prep documents (resume, job description, notes)

@@ -230,3 +230,27 @@ test('prep documents: HTML files are read as clean text', async () => {
   assert.match(docs.buildContextBlock(), /Consultant SAP FI/);
   assert.ok(docs.getSupportedExtensions().includes('html'));
 });
+
+test('polite requests count as questions (regression: "j\'aimerais que vous me parliez de vous")', () => {
+  const requests = [
+    "Bonne poign, j’ai bien eu votre CV, franchement il est super, il y a rien à dire. Mais avant de commencer j’aimerais que vous me parliez un peu de vous.",
+    'Mais avant de commencer, j aimerais que vous me parliez de vous',
+    'Dites-moi ce que vous savez de notre entreprise.',
+    'Très bien, présentez-vous en quelques mots',
+    'Great, so walk me through your experience with SAP',
+    "I'd like you to tell me about a difficult client",
+    'بغيت نعرف علاش بغيتي تخدم معانا',
+    'قدم نفسك من فضلك'
+  ];
+  for (const text of requests) {
+    assert.equal(language.isLikelyQuestion(text), true, text);
+  }
+  const statements = [
+    'Je suis responsable de la direction financière',
+    'Super, merci pour votre réponse',
+    'Merci beaucoup, au revoir'
+  ];
+  for (const text of statements) {
+    assert.equal(language.isLikelyQuestion(text), false, text);
+  }
+});

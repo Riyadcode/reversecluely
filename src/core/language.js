@@ -124,11 +124,46 @@ const QUESTION_STARTERS = {
   ]
 };
 
+// Matched anywhere in the utterance. Interviewers often phrase questions as
+// polite requests with no question mark ("j'aimerais que vous me parliez de
+// vous", "walk me through your last project"), so those are listed too.
+// Apostrophes and hyphens are ignored when matching.
 const QUESTION_PHRASES = {
-  en: ['tell me about', 'what do you', 'how would you', 'can you explain', 'what is your', 'why do you', 'what are your', 'do you have', 'any questions'],
-  fr: ['parlez-moi de', 'parlez moi de', 'pouvez-vous', "qu'est-ce que", 'est-ce que', 'comment vous', 'pourquoi vous', 'quelles sont', 'quel est', 'avez-vous des questions'],
-  ar: ['حدثني عن', 'ما هو', 'ما هي', 'ما هيا', 'كيف يمكنك', 'لماذا تريد', 'هل يمكنك', 'هل لديك', 'ما رأيك']
+  en: [
+    'tell me about', 'tell us about', 'tell me more', 'what do you', 'how would you', 'can you explain',
+    'what is your', 'why do you', 'what are your', 'do you have', 'any questions',
+    'i would like you to', "i'd like you to", 'i would like to know', "i'd like to know",
+    'i would like to hear', "i'd like to hear", 'i want to know', 'i want to hear', "i'm curious",
+    'i am curious', 'walk me through', 'walk us through', 'take me through', 'talk me through',
+    'talk to me about', 'give me an example', 'give us an example', 'introduce yourself',
+    'tell me a bit', 'tell me a little'
+  ],
+  fr: [
+    'parlez-moi', 'parle-moi', 'parlez-nous', 'pouvez-vous', 'pourriez-vous', "qu'est-ce que",
+    'est-ce que', 'comment vous', 'pourquoi vous', 'quelles sont', 'quel est', 'avez-vous des questions',
+    "j'aimerais que vous", "j'aimerais que tu", "j'aimerais savoir", "j'aimerais connaître",
+    "j'aimerais comprendre", "j'aimerais entendre", 'je voudrais que vous', 'je voudrais savoir',
+    'je voudrais connaître', 'je voudrais comprendre', 'je souhaiterais', 'dites-moi', 'dis-moi',
+    'présentez-vous', 'présente-toi', 'racontez-moi', 'raconte-moi', 'expliquez-moi', 'explique-moi',
+    'décrivez-moi', 'me parler de', 'me parliez', 'nous parliez', 'me parles', 'me dire', 'me décrire',
+    "m'expliquer", 'me présenter', 'vous présenter', 'donnez-moi un exemple', 'un exemple de',
+    'vous pouvez me', 'tu peux me'
+  ],
+  ar: [
+    'حدثني', 'حدثنا', 'كلمني', 'ما هو', 'ما هي', 'ما هيا', 'كيف يمكنك', 'لماذا تريد', 'هل يمكنك',
+    'هل لديك', 'ما رأيك', 'أريد أن أعرف', 'اريد ان اعرف', 'أود أن أعرف', 'اود ان اعرف', 'أود أن تحدثني',
+    'بغيت نعرف', 'بغيت تعاودلي', 'عاودلي', 'عاود لي', 'قوليا', 'گولي', 'قل لي', 'قدم نفسك', 'قدّم نفسك',
+    'عرفني', 'عرّفني', 'عرف بنفسك', 'اشرح لي', 'وضح لي', 'أعطني مثال', 'اعطني مثال', 'عطيني مثال'
+  ]
 };
+
+// Openers stripped before checking how a sentence starts.
+const LEADING_FILLERS = /^((and|but|so|okay|ok|well|right|alright|great|perfect|alors|donc|bon|et|euh|mais|bien|très bien|parfait|d'accord|ok alors|طيب|إذن|اذن|و|ولكن|لكن|زوين|مزيان)\s+)+/;
+
+/** Lowercase and drop apostrophes/hyphens so "j'aimerais", "j aimerais" and "parlez moi" all match. */
+function foldForMatch(value) {
+  return ` ${String(value).toLowerCase().replace(/['’`\-]/g, ' ').replace(/\s+/g, ' ').trim()} `;
+}
 
 /** Prefix match on whole words, so "صف" (describe) does not match "صفحة" (page). */
 function startsWithWord(sentence, starter) {
@@ -169,14 +204,16 @@ function isLikelyQuestion(text, language = null) {
   // Check the start of each sentence, since an interviewer often says
   // "Okay, great. So why do you want this job" in a single utterance.
   const sentences = lower.split(/[.!;:,،\n]+/).map((s) => s.trim()).filter(Boolean);
+  const folded = foldForMatch(lower);
   for (const lang of languages) {
     for (const sentence of sentences) {
-      const startOf = sentence.replace(/^(and|so|okay|ok|alors|donc|bon|et|euh|bien|طيب|إذن|اذن|و)\s+/, '');
+      const startOf = sentence.replace(LEADING_FILLERS, '');
       if (QUESTION_STARTERS[lang].some((starter) => startsWithWord(startOf, starter))) {
         return true;
       }
     }
-    if (QUESTION_PHRASES[lang].some((phrase) => lower.includes(phrase))) {
+    // Whole-word match on the folded text, so "me dire" never matches "me direction".
+    if (QUESTION_PHRASES[lang].some((phrase) => folded.includes(foldForMatch(phrase)))) {
       return true;
     }
   }

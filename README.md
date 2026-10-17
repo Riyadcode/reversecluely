@@ -38,7 +38,7 @@ Open **Settings** (`Cmd/Ctrl + ,`):
 | Listen to | Microphone + computer audio (default), Computer audio only, Microphone only | With earphones, pick one of the first two so the interviewer is heard |
 | Spoken languages | `en,fr,ar` | Detection only considers these, which stops accented French from being read as Spanish |
 | Answer language | Same as the question, Always English/French/Arabic | |
-| Answer | Questions only (default), Every sentence | "Questions only" ignores small talk and your own answers; they stay in the conversation history as context |
+| Answer | Questions only (default), Every sentence | "Questions only" ignores small talk and your own answers; they stay in the conversation history as context. Polite requests such as "j'aimerais que vous me parliez de vous" count as questions. If one is missed, click **Answer anyway** under it in the chat |
 
 Then press `Alt + R` to start listening.
 
@@ -62,7 +62,9 @@ If system audio is unavailable, arlclue shows a warning in the chat and falls ba
 - Each transcript in the chat shows its language (`EN`/`FR`/`AR`) and a `?` when it was detected as a question.
 - Arabic answers display right-to-left. Code blocks stay left-to-right.
 
-Keep **Whisper Language** set to `auto` for detection. Setting a fixed code turns detection off.
+Keep **Whisper Language** set to `auto` for detection. It switches language from one sentence to the next, and leans towards the language already being spoken when a short phrase is ambiguous. Setting a fixed code (for example `fr`) turns detection off.
+
+If an answer fails, the chat says why (missing or rejected Gemini key, quota, no connection) instead of showing a canned reply.
 
 ## Configuration
 

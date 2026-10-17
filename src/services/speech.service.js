@@ -2069,6 +2069,7 @@ class SpeechService extends EventEmitter {
           model: this._getWhisperModel(),
           language: this._getWhisperLanguage(),
           allowedLanguages: this.getSpokenLanguages(),
+          preferLanguage: this.lastDetectedLanguage,
           modelDir: this._getWhisperModelDir(),
           device: this._getWhisperDevice()
         });
@@ -2113,7 +2114,8 @@ class SpeechService extends EventEmitter {
     try {
       await new Promise((resolve, reject) => {
         const child = spawn(this.whisperCommand.command, args, {
-          stdio: ['ignore', 'pipe', 'pipe']
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
         });
 
         let stderr = '';

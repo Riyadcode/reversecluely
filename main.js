@@ -512,6 +512,20 @@ class ApplicationController {
     });
   }
 
+  setupAnswerAnywayIPC() {
+    // "Answer anyway" in the chat, for an utterance the question detector
+    // skipped (e.g. a request phrased as a statement).
+    ipcMain.handle("answer-utterance", async (_event, payload = {}) => {
+      const text = String(payload.text || "").trim().slice(0, 4000);
+      if (!text) {
+        return { ok: false };
+      }
+      const language = typeof payload.language === "string" ? payload.language : null;
+      await this.processTranscriptionWithLLM(text, sessionManager.getOptimizedHistory(), { language });
+      return { ok: true };
+    });
+  }
+
   setupContextDocsIPC() {
     const send = (docs) => {
       windowManager.broadcastToAllWindows("context-docs-changed", { docs });
@@ -588,6 +602,7 @@ class ApplicationController {
 
   setupIPCHandlers() {
   this.setupContextDocsIPC();
+  this.setupAnswerAnywayIPC();
   ipcMain.handle("take-screenshot", () => this.triggerScreenshotOCR());
   ipcMain.handle("list-displays", () => captureService.listDisplays());
   ipcMain.handle("capture-area", (event, options) => captureService.captureAndProcess(options));
@@ -1427,7 +1442,11 @@ class ApplicationController {
         preview: combined.substring(0, 80)
       });
       this._utteranceBuffer = "";
-      this.sendToVoiceResponseWindows("transcription-skipped", { reason: "not-a-question", language });
+      this.sendToVoiceResponseWindows("transcription-skipped", {
+        reason: "not-a-question",
+        text: combined,
+        language
+      });
       return;
     }
 
@@ -1547,33 +1566,27 @@ class ApplicationController {
 
       // Try to provide a fallback response
       try {
-        const fallbackResult = llmService.generateIntelligentFallbackResponse(text, this.activeSkill);
-        // Carry the streaming messageId so the target replaces the live
-        // bubble instead of leaving it stuck and appending a duplicate.
-        if (messageId) {
-          fallbackResult.metadata = { ...fallbackResult.metadata, messageId };
-        }
-
-        sessionManager.addModelResponse(fallbackResult.response, {
-          skill: this.activeSkill,
-          processingTime: fallbackResult.metadata.processingTime,
-          usedFallback: true,
-          isTranscriptionResponse: true,
-          fallbackReason: error.message
-        });
+        // Say plainly that the answer failed and why. The old canned reply
+        // ("Yeah, I'm listening...") looked like a real answer and hid a
+        // missing key or exhausted quota in the middle of an interview.
+        const notice = this.describeLlmFailure(error);
+        const fallbackResult = {
+          response: notice,
+          metadata: { processingTime: 0, usedFallback: true, isError: true, ...(messageId ? { messageId } : {}) }
+        };
 
         this.sendTranscriptionLLMResponseToVoiceTargets(fallbackResult);
         if (this.shouldShowVoiceOverlay()) {
           windowManager.showLLMResponse(fallbackResult.response, {
             skill: this.activeSkill,
-            processingTime: fallbackResult.metadata.processingTime,
+            processingTime: 0,
             usedFallback: true,
             isTranscriptionResponse: true
           });
         }
-        logger.info("Used fallback response for transcription", {
+        logger.info("Reported LLM failure for transcription", {
           skill: this.activeSkill,
-          fallbackResponse: fallbackResult.response
+          notice
         });
         
       } catch (fallbackError) {
@@ -1657,6 +1670,24 @@ class ApplicationController {
       return;
     }
     chatWindow.webContents.send(channel, data);
+  }
+
+  /** A short, actionable message for a failed Gemini request. */
+  describeLlmFailure(error) {
+    const message = String((error && error.message) || error || "");
+    let reason;
+    if (/not initialized|api key configuration|no api key/i.test(message)) {
+      reason = "no Gemini API key is set. Add it in Settings (Cmd/Ctrl + ,).";
+    } else if (/api[_ ]?key.*(invalid|not valid)|API_KEY_INVALID|permission|401|403/i.test(message)) {
+      reason = "the Gemini API key was rejected. Check it in Settings.";
+    } else if (/429|quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(message)) {
+      reason = "the Gemini quota is used up for now. Wait a minute or check your plan.";
+    } else if (/ENOTFOUND|ECONN|network|timeout|fetch failed|getaddrinfo/i.test(message)) {
+      reason = "Gemini could not be reached. Check your internet connection.";
+    } else {
+      reason = message.slice(0, 160) || "unknown error";
+    }
+    return `⚠️ No answer: ${reason}`;
   }
 
   /** "questions" answers only detected questions; "all" answers every utterance. */

@@ -9,6 +9,15 @@ import numpy as np
 import torch
 import whisper
 
+# Windows pipes default to the ANSI code page (cp1252), which turned "à" into
+# "�" and could mangle temp paths containing accented user names. Force UTF-8
+# both ways; output is also ASCII-escaped JSON as a second line of defence.
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        pass
+
 
 model = None
 model_name = None
@@ -17,7 +26,7 @@ model_device = None
 
 
 def send(payload):
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + '\n')
+    sys.stdout.write(json.dumps(payload, ensure_ascii=True) + '\n')
     sys.stdout.flush()
 
 
@@ -97,7 +106,7 @@ def load_audio_input(audio_path):
         return audio_path
 
 
-def detect_allowed_language(loaded_model, audio, allowed):
+def detect_allowed_language(loaded_model, audio, allowed, prefer=None):
     """Run Whisper's language ID, keeping only the languages the user expects.
 
     Unrestricted detection often labels accented French as Spanish or Darija
@@ -114,6 +123,12 @@ def detect_allowed_language(loaded_model, audio, allowed):
     if not candidates:
         return None, {}
     best = max(candidates, key=candidates.get)
+    # Stickiness: short or ambiguous phrases ("OK", names, technical terms)
+    # often score close between languages. Keep the conversation's current
+    # language unless another one is clearly more likely; a real switch to
+    # another language scores far higher than this margin.
+    if prefer in candidates and best != prefer and candidates[prefer] >= 0.5 * candidates[best]:
+        best = prefer
     return best, candidates
 
 
@@ -128,7 +143,8 @@ def transcribe(request):
     language_probs = {}
     if language is None and allowed:
         try:
-            language, language_probs = detect_allowed_language(loaded_model, audio, allowed)
+            language, language_probs = detect_allowed_language(
+                loaded_model, audio, allowed, request.get('prefer_language'))
         except Exception:
             # Fall back to Whisper's own unrestricted detection inside transcribe().
             language = None
