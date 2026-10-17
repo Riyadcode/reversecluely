@@ -500,7 +500,11 @@ class SpeechService extends EventEmitter {
       this.speechConfig.outputFormat = sdk.OutputFormat.Detailed;
       this.speechConfig.setProperty(sdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '5000');
       this.speechConfig.setProperty(sdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, '2000');
-      this.speechConfig.setProperty(sdk.PropertyId.Speech_SegmentationSilenceTimeoutMs, '2000');
+      // Pause that ends a sentence. Upstream used 2000 ms, which added two
+      // seconds before every answer; 800 ms matches the Whisper VAD, and
+      // fragments split by a mid-sentence pause are merged afterwards.
+      const segmentationMs = Math.min(3000, Math.max(300, Number(process.env.AZURE_SEGMENTATION_SILENCE_MS) || 800));
+      this.speechConfig.setProperty(sdk.PropertyId.Speech_SegmentationSilenceTimeoutMs, String(segmentationMs));
 
       if (azureConfig.enableDictation) {
         this.speechConfig.enableDictation();
