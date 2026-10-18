@@ -729,14 +729,20 @@ class MainWindowUI {
 
             // Slightly attenuate each input when mixing so overlapping voices don't clip.
             const gainValue = streams.length > 1 ? 0.8 : 1;
-            this._audioSources = streams.map(({ stream }) => {
+            const analysers = [];
+            this._audioSources = streams.map(({ kind, stream }) => {
                 const source = audioContext.createMediaStreamSource(stream);
                 const gain = audioContext.createGain();
                 gain.gain.value = gainValue;
                 source.connect(gain);
                 gain.connect(scriptNode);
+                const analyser = audioContext.createAnalyser();
+                analyser.fftSize = 2048;
+                source.connect(analyser);
+                analysers.push({ kind, analyser, peak: 0 });
                 return source;
             });
+            this._watchCaptureHealth(streams, analysers);
 
             scriptNode.onaudioprocess = (event) => {
                 if (!this.isRecording || !window.electronAPI || !window.electronAPI.sendAudioChunk) {
@@ -773,6 +779,60 @@ class MainWindowUI {
     }
 
     /**
+     * Tell the user, in the chat, when a capture silently fails: the computer
+     * audio track ends, or no sound at all arrives from it in the first
+     * seconds. Without this, a dead loopback looked like "it can't hear".
+     */
+    _watchCaptureHealth(streams, analysers) {
+        const warn = (message) => {
+            if (window.electronAPI && window.electronAPI.reportAudioWarning) {
+                window.electronAPI.reportAudioWarning(message);
+            }
+        };
+        streams.forEach(({ kind, stream }) => {
+            stream.getAudioTracks().forEach((track) => {
+                track.addEventListener('ended', () => {
+                    if (this.isRecording) {
+                        warn(kind === 'system'
+                            ? 'Computer audio capture stopped. Stop and restart listening (Alt+R).'
+                            : 'Microphone capture stopped. Check that the microphone is still connected.');
+                    }
+                });
+            });
+        });
+
+        const buffer = new Float32Array(2048);
+        let elapsed = 0;
+        clearInterval(this._healthTimer);
+        this._healthTimer = setInterval(() => {
+            if (!this.isRecording) {
+                clearInterval(this._healthTimer);
+                return;
+            }
+            analysers.forEach((entry) => {
+                entry.analyser.getFloatTimeDomainData(buffer);
+                let sum = 0;
+                for (let i = 0; i < buffer.length; i++) sum += buffer[i] * buffer[i];
+                entry.peak = Math.max(entry.peak, Math.sqrt(sum / buffer.length));
+            });
+            elapsed += 500;
+            if (elapsed >= 10000) {
+                clearInterval(this._healthTimer);
+                const system = analysers.find((a) => a.kind === 'system');
+                logger.info('Capture levels after 10 s', {
+                    component: 'MainWindowUI',
+                    levels: analysers.map((a) => `${a.kind}=${a.peak.toFixed(4)}`).join(' ')
+                });
+                if (system && system.peak < 0.002) {
+                    warn('No sound received from the computer audio in 10 s. Check that the video or call is playing, and that your earphones are the default output device in Windows sound settings.');
+                } else if (system) {
+                    warn('Computer audio OK: sound is being received.');
+                }
+            }
+        }, 500);
+    }
+
+    /**
      * Get a stream of what the computer is playing.
      *  - Windows: Electron's loopback capture through getDisplayMedia (the
      *    main process answers with audio: 'loopback'); the screen video track
@@ -788,13 +848,18 @@ class MainWindowUI {
         if (platform.includes('win')) {
             try {
                 const display = await navigator.mediaDevices.getDisplayMedia({ audio: true, video: true });
-                display.getVideoTracks().forEach((track) => {
-                    track.stop();
-                    display.removeTrack(track);
-                });
                 if (display.getAudioTracks().length > 0) {
+                    // Keep the screen track alive but idle. Stopping it can
+                    // end the whole capture session in Chromium, loopback
+                    // audio included, which left only the microphone
+                    // listening. It is stopped with the rest on stop.
+                    display.getVideoTracks().forEach((track) => {
+                        track.enabled = false;
+                        track.applyConstraints({ frameRate: 1 }).catch(() => {});
+                    });
                     return display;
                 }
+                display.getTracks().forEach((track) => track.stop());
             } catch (error) {
                 logger.warn('Windows loopback capture failed; looking for a virtual device', {
                     component: 'MainWindowUI',
@@ -830,6 +895,7 @@ class MainWindowUI {
                 this._scriptNode.onaudioprocess = null;
                 this._scriptNode = null;
             }
+            clearInterval(this._healthTimer);
             if (this._audioSources) {
                 this._audioSources.forEach((source) => source.disconnect());
                 this._audioSources = null;
