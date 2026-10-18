@@ -496,6 +496,8 @@ class SpeechService extends EventEmitter {
       this.azureAutoDetectLocales = this._getAzureAutoDetectLocales();
       if (this.azureAutoDetectLocales.length > 1) {
         this.speechConfig.setProperty(sdk.PropertyId.SpeechServiceConnection_LanguageIdMode, 'Continuous');
+      } else if (this.azureAutoDetectLocales.length === 1) {
+        this.speechConfig.speechRecognitionLanguage = this.azureAutoDetectLocales[0];
       }
       this.speechConfig.outputFormat = sdk.OutputFormat.Detailed;
       this.speechConfig.setProperty(sdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, '5000');
@@ -506,7 +508,11 @@ class SpeechService extends EventEmitter {
       const segmentationMs = Math.min(3000, Math.max(300, Number(process.env.AZURE_SEGMENTATION_SILENCE_MS) || 800));
       this.speechConfig.setProperty(sdk.PropertyId.Speech_SegmentationSilenceTimeoutMs, String(segmentationMs));
 
-      if (azureConfig.enableDictation) {
+      // Dictation mode routes the SDK to the legacy /dictation/v1 endpoint,
+      // which has no continuous language ID: every utterance was decoded as
+      // the default en-US, so French speech came out as stray English words.
+      // Only use it for a single fixed language.
+      if (azureConfig.enableDictation && this.azureAutoDetectLocales.length <= 1) {
         this.speechConfig.enableDictation();
       }
 
@@ -616,9 +622,6 @@ class SpeechService extends EventEmitter {
         const autoDetect = sdk.AutoDetectSourceLanguageConfig.fromLanguages(locales);
         this.recognizer = sdk.SpeechRecognizer.FromConfig(this.speechConfig, autoDetect, this.audioConfig);
       } else {
-        if (locales.length === 1) {
-          this.speechConfig.speechRecognitionLanguage = locales[0];
-        }
         this.recognizer = new sdk.SpeechRecognizer(this.speechConfig, this.audioConfig);
       }
       this._startAudioSources();

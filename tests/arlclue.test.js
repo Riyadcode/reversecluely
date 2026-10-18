@@ -351,3 +351,52 @@ test('PDFs still parse after the speech service installs its window polyfill', a
   await docs.addFile(path.join(FIXTURES, 'job-description.pdf'));
   assert.match(docs.buildContextBlock(), /Junior SAP consultant in Casablanca/);
 });
+
+test('Azure with several spoken languages uses the universal v2 endpoint (continuous language ID)', async () => {
+  // Regression: dictation mode sent the SDK to the legacy /dictation/v1
+  // endpoint, where language ID does not work and French speech was decoded
+  // as en-US ("Yeah." from a French video).
+  const sdk = require('microsoft-cognitiveservices-speech-sdk');
+  const { SpeechConnectionFactory } = require('microsoft-cognitiveservices-speech-sdk/distrib/lib/src/common.speech/SpeechConnectionFactory.js');
+  const speech = require('../src/services/speech.service');
+  const saved = { ...process.env };
+  const originalCreate = SpeechConnectionFactory.prototype.create;
+  const urls = [];
+  // Capture the URL the SDK builds instead of opening a socket.
+  SpeechConnectionFactory.prototype.create = async function (...args) {
+    const connection = await originalCreate.apply(this, args);
+    urls.push(connection.privUri);
+    throw new Error('captured');
+  };
+  const endpointFor = async (spokenLanguages) => {
+    Object.assign(process.env, {
+      SPEECH_PROVIDER: 'azure', AZURE_SPEECH_KEY: 'dummy', AZURE_SPEECH_REGION: 'francecentral',
+      SPOKEN_LANGUAGES: spokenLanguages, WHISPER_LANGUAGE: 'auto'
+    });
+    speech.initializeClient();
+    const locales = speech.azureAutoDetectLocales;
+    const audio = sdk.AudioConfig.fromStreamInput(sdk.AudioInputStream.createPushStream());
+    const recognizer = locales.length > 1
+      ? sdk.SpeechRecognizer.FromConfig(speech.speechConfig, sdk.AutoDetectSourceLanguageConfig.fromLanguages(locales), audio)
+      : new sdk.SpeechRecognizer(speech.speechConfig, audio);
+    await new Promise((resolve) => {
+      recognizer.canceled = () => resolve();
+      recognizer.startContinuousRecognitionAsync(() => setTimeout(resolve, 1000), () => resolve());
+    });
+    recognizer.close();
+    return urls.pop() || '';
+  };
+  try {
+    const multi = await endpointFor('en,fr,ar');
+    assert.match(multi, /\/stt\/speech\/universal\/v2\?/, multi);
+    assert.match(multi, /lidEnabled=true/);
+    const single = await endpointFor('fr');
+    assert.match(single, /language=fr-FR/, single);
+  } finally {
+    SpeechConnectionFactory.prototype.create = originalCreate;
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+    speech.initializeClient();
+    speech.shutdown();
+  }
+});
