@@ -632,8 +632,15 @@ class SpeechService extends EventEmitter {
       return;
     }
 
+    // What Azure sends back, so a session that hears audio but returns no
+    // text explains itself in the chat instead of staying silent.
+    this._azureStats = { partial: 0, final: 0, noMatch: {} };
+    clearTimeout(this._azureDiagTimer);
+    this._azureDiagTimer = setTimeout(() => this._reportAzureStats(), 20000);
+
     this.recognizer.recognizing = (s, e) => {
       try {
+        this._azureStats.partial += 1;
         if (e.result.reason === sdk.ResultReason.RecognizingSpeech) {
           this.emit('interim-transcription', e.result.text);
         }
@@ -644,7 +651,16 @@ class SpeechService extends EventEmitter {
 
     this.recognizer.recognized = (s, e) => {
       try {
+        if (e.result.reason === sdk.ResultReason.NoMatch) {
+          let why = 'NotRecognized';
+          try {
+            why = sdk.NoMatchReason[sdk.NoMatchDetails.fromResult(e.result).reason] || why;
+          } catch (_) { /* keep default */ }
+          this._azureStats.noMatch[why] = (this._azureStats.noMatch[why] || 0) + 1;
+          logger.info('Azure returned no match', { reason: why });
+        }
         if (e.result.reason === sdk.ResultReason.RecognizedSpeech && e.result.text && e.result.text.trim()) {
+          this._azureStats.final += 1;
           let reported = null;
           try {
             reported = sdk.AutoDetectSourceLanguageResult.fromResult(e.result).language;
@@ -665,6 +681,10 @@ class SpeechService extends EventEmitter {
 
       if (e.reason === sdk.CancellationReason.Error) {
         const details = e.errorDetails || '';
+        // The chat shows only a generic line for speech errors; send the
+        // exact Azure code and message as well.
+        const code = sdk.CancellationErrorCode[e.errorCode] || e.errorCode;
+        this.emit('warning', `Azure stopped: ${code}. ${details}`.slice(0, 400));
         if (details.includes('1006')) {
           this.emit('error', 'Network connection failed. Please check your internet connection.');
         } else if (details.includes('InvalidServiceCredentials')) {
@@ -851,6 +871,19 @@ class SpeechService extends EventEmitter {
       this.nativeMixer.removeAllListeners('data');
       this.nativeMixer = null;
     }
+  }
+
+  _reportAzureStats() {
+    const stats = this._azureStats;
+    if (!stats || !this.isRecording || this.provider !== 'azure') {
+      return;
+    }
+    logger.info('Azure recognition after 20 s', stats);
+    if (stats.final > 0) {
+      return;
+    }
+    const noMatch = Object.entries(stats.noMatch).map(([why, n]) => `${why} x${n}`).join(', ') || 'none';
+    this.emit('warning', `Azure: no text after 20 s. Partial results: ${stats.partial}, no-match replies: ${noMatch}. Audio is reaching Azure but it recognises no speech; send this message for diagnosis.`);
   }
 
   _resetCaptureCheck() {
@@ -1247,6 +1280,7 @@ class SpeechService extends EventEmitter {
   }
 
   _cleanup() {
+    clearTimeout(this._azureDiagTimer);
     if (this.segmentTimer) {
       clearInterval(this.segmentTimer);
       this.segmentTimer = null;
