@@ -887,7 +887,7 @@ class SpeechService extends EventEmitter {
   }
 
   _resetCaptureCheck() {
-    this._captureCheck = { startedAt: 0, bytes: 0, reported: false, sample: [], sampleBytes: 0, saved: false };
+    this._captureCheck = { startedAt: 0, bytes: 0, reported: false, sample: [], sampleBytes: 0, saved: false, peakRms: 0 };
   }
 
   /**
@@ -903,6 +903,7 @@ class SpeechService extends EventEmitter {
       check.startedAt = now;
     }
     check.bytes += chunk.length;
+    check.peakRms = Math.max(check.peakRms, this._chunkRmsEnergy(chunk));
 
     const elapsed = now - check.startedAt;
     if (!check.reported && elapsed >= 10000) {
@@ -924,7 +925,11 @@ class SpeechService extends EventEmitter {
         try {
           fs.mkdirSync(path.dirname(file), { recursive: true });
           fs.writeFileSync(file, this._createWavBuffer(Buffer.concat(check.sample, check.sampleBytes)));
-          this.emit('warning', `Saved the first 20 s of what the speech engine hears: ${file} (open it to check the sound).`);
+          const level = check.peakRms > 0 ? Math.round(20 * Math.log10(check.peakRms)) : -120;
+          this.emit('warning', `Saved the first 20 s of what the speech engine hears: ${file} (loudest level ${level} dBFS; speech is usually between -30 and -10).`);
+          if (level < -40) {
+            this.emit('warning', `The audio sent to the speech engine is very quiet (${level} dBFS), so speech may be taken for silence. Raise the Windows volume and the video/call volume.`);
+          }
         } catch (error) {
           logger.warn('Could not save the capture sample', { error: error.message });
         }

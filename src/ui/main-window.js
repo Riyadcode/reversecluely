@@ -726,6 +726,7 @@ class MainWindowUI {
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
             this._audioContext = audioContext;
             const resampleTo16k = this._createResampler(audioContext.sampleRate, 16000);
+            const normalizeLevel = this._createAutoGain();
 
             const bufferSize = 4096;
             const scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
@@ -752,7 +753,7 @@ class MainWindowUI {
                 if (!this.isRecording || !window.electronAPI || !window.electronAPI.sendAudioChunk) {
                     return;
                 }
-                const inputData = resampleTo16k(event.inputBuffer.getChannelData(0));
+                const inputData = normalizeLevel(resampleTo16k(event.inputBuffer.getChannelData(0)));
                 if (!inputData.length) {
                     return;
                 }
@@ -783,6 +784,37 @@ class MainWindowUI {
                 await window.electronAPI.stopSpeechRecognition();
             } catch (_) { /* ignore */ }
         }
+    }
+
+    /**
+     * Automatic gain for the 16 kHz signal sent to the speech engine.
+     * Windows loopback can deliver the interviewer at -40 dBFS or lower,
+     * which Whisper's voice detection and Azure both treat as silence even
+     * though it sounds fine at high playback volume. The gain moves the
+     * speech level towards about -24 dBFS: down quickly on loud blocks, up
+     * slowly, never more than x40 (+32 dB), and silence below the gate is
+     * not amplified.
+     */
+    _createAutoGain({ target = 0.06, maxGain = 40, gate = 0.0005 } = {}) {
+        let gain = 1;
+        return (input) => {
+            if (!input.length) {
+                return input;
+            }
+            let sum = 0;
+            for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+            const rms = Math.sqrt(sum / input.length);
+            if (rms > gate) {
+                const desired = Math.min(maxGain, Math.max(1, target / rms));
+                gain = desired < gain ? desired : gain + (desired - gain) * 0.15;
+            }
+            const out = new Float32Array(input.length);
+            for (let i = 0; i < input.length; i++) {
+                const v = input[i] * gain;
+                out[i] = v > 1 ? 1 : (v < -1 ? -1 : v);
+            }
+            return out;
+        };
     }
 
     /**
@@ -860,10 +892,11 @@ class MainWindowUI {
                     component: 'MainWindowUI',
                     levels: analysers.map((a) => `${a.kind}=${a.peak.toFixed(4)}`).join(' ')
                 });
+                const dbfs = (value) => (value > 0 ? Math.round(20 * Math.log10(value)) : -120);
                 if (system && system.peak < 0.002) {
                     warn('No sound received from the computer audio in 10 s. Check that the video or call is playing, and that your earphones are the default output device in Windows sound settings.');
                 } else if (system) {
-                    warn(`Computer audio OK: sound is being received (device ${Math.round(deviceRate / 100) / 10} kHz, converted to 16 kHz).`);
+                    warn(`Computer audio OK: sound is being received (device ${Math.round(deviceRate / 100) / 10} kHz, converted to 16 kHz; level ${dbfs(system.peak)} dBFS before automatic gain).`);
                 }
             }
         }, 500);
