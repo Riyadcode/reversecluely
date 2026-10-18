@@ -1426,6 +1426,45 @@ class WindowManager {
     });
   }
 
+  /**
+   * Resize the answer window to the measured height of its content, so the
+   * whole answer is visible without scrolling. The window keeps its
+   * position and stays inside the screen's work area. With wantWider, it is
+   * first widened (up to 70% of the screen) so long answers wrap less. The
+   * renderer shrinks the text if the answer still does not fit.
+   */
+  fitLLMWindowToContent({ neededHeight, wantWider = false } = {}) {
+    const llmWindow = this.windows.get('llmResponse');
+    if (!llmWindow || llmWindow.isDestroyed() || this.isScreenBeingShared) return null;
+    const needed = Number(neededHeight);
+    if (!Number.isFinite(needed) || needed <= 0) return null;
+
+    const bounds = llmWindow.getBounds();
+    const area = screen.getDisplayMatching(bounds).workArea;
+    const margin = 12;
+
+    let width = bounds.width;
+    let widened = false;
+    if (wantWider) {
+      const maxWidth = Math.round(Math.min(area.width - 2 * margin, Math.max(width, area.width * 0.7)));
+      if (maxWidth > width + 20) {
+        width = maxWidth;
+        widened = true;
+      }
+    }
+
+    // Keep the top where it is (bound windows put it under the command bar),
+    // unless that leaves too little room below.
+    const top = Math.max(area.y + margin, Math.min(bounds.y, area.y + area.height - 240));
+    const available = area.y + area.height - margin - top;
+    const height = Math.max(160, Math.min(Math.ceil(needed), available));
+    let x = Math.min(bounds.x, area.x + area.width - margin - width);
+    x = Math.max(area.x + margin, x);
+
+    llmWindow.setBounds({ x: Math.round(x), y: Math.round(top), width: Math.round(width), height: Math.round(height) });
+    return { width: Math.round(width), height: Math.round(height), available: Math.round(available), widened };
+  }
+
   calculateOptimalWindowSize(contentMetrics) {
     const display = this.currentDisplay || screen.getPrimaryDisplay();
     const { width: screenWidth, height: screenHeight } = display.workArea || display.workAreaSize;

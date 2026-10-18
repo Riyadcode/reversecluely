@@ -693,15 +693,105 @@
                 displayFullLayout(response);
             }
             
-            // Request dynamic window sizing based on content
+            // Position the window, then size it to the whole answer.
             setTimeout(() => {
                 window.electronAPI.resizeLlmWindowForContent(contentMetrics)
-                    .then(result => {
-                    })
                     .catch(error => {
                         console.error('Failed to resize window:', error);
-                    });
+                    })
+                    .finally(() => fitWindowToAnswer());
             }, 200);
+        }
+
+        // Make the whole answer visible without scrolling: measure it, grow
+        // the window to that height (widening it first for long answers),
+        // and if it still does not fit the screen, shrink the text (down to
+        // 65%). The answer is always shown from its first line.
+        let fitRun = 0;
+
+        // Alt+Down / Alt+Up (global shortcuts) scroll the answer by a page,
+        // for the rare answer that is longer than the screen even shrunk.
+        if (window.electronAPI && window.electronAPI.receive) {
+            window.electronAPI.receive('scroll-answer', (_event, data) => {
+                const els = (hasCode
+                    ? Array.from(document.querySelectorAll('#split-layout .panel-content'))
+                    : [document.querySelector('.full-content-inner')]).filter(Boolean);
+                const direction = data && data.direction === 'up' ? -1 : 1;
+                els.forEach(el => el.scrollBy({ top: direction * el.clientHeight * 0.8, behavior: 'smooth' }));
+            });
+        }
+        async function fitWindowToAnswer() {
+            if (!window.electronAPI || !window.electronAPI.fitLlmWindowToContent) return;
+            const run = ++fitRun;
+            const zoomTargets = ['full-markdown', 'text-content', 'code-content']
+                .map(id => document.getElementById(id)).filter(Boolean);
+            let zoom = 1;
+            const setZoom = (z) => zoomTargets.forEach(el => { el.style.zoom = String(z); });
+            setZoom(1);
+            const scrollers = () => (hasCode
+                ? Array.from(document.querySelectorAll('#split-layout .panel-content'))
+                : [document.querySelector('.full-content-inner')]).filter(Boolean);
+            // Height the window needs: everything outside the scroll area
+            // (title bar, paddings) plus the real height of the answer text.
+            // scrollHeight cannot be used for the text: it is never smaller
+            // than the visible area, so a short answer always looked "too tall".
+            const contentHeight = (el) => {
+                const style = window.getComputedStyle(el);
+                const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+                const children = Array.from(el.children).reduce((sum, child) => sum + child.getBoundingClientRect().height, 0);
+                return Math.ceil(children + padding);
+            };
+            const measure = () => {
+                const els = scrollers();
+                if (!els.length) return 0;
+                const chrome = window.innerHeight - Math.min(...els.map(el => el.clientHeight));
+                // When the text overflows, scrollHeight is exact (it also
+                // counts the outer margins the child measurement misses).
+                const text = Math.max(...els.map(el => (el.scrollHeight > el.clientHeight + 1
+                    ? Math.max(el.scrollHeight, contentHeight(el))
+                    : contentHeight(el))));
+                return chrome + text + 8;
+            };
+            const overflows = () => scrollers().some(el => el.scrollHeight > el.clientHeight + 1);
+            const settle = () => new Promise(resolve => setTimeout(resolve, 80));
+
+            // Wait until the window has really taken its new height before
+            // measuring again; shrinking against a stale size made short
+            // answers smaller for nothing.
+            const waitForSize = async ({ width, height }) => {
+                for (let i = 0; i < 15 && (Math.abs(window.innerHeight - height) > 2 || Math.abs(window.innerWidth - width) > 2); i++) {
+                    await settle();
+                }
+                await settle();   // one more frame for the text to re-wrap
+            };
+
+            for (let attempt = 0; attempt < 8 && run === fitRun; attempt++) {
+                const needed = measure();
+                if (!needed) break;
+                const result = await window.electronAPI.fitLlmWindowToContent({
+                    neededHeight: needed,
+                    wantWider: needed > window.screen.availHeight * 0.75
+                });
+                if (!result) break;
+                await waitForSize(result);
+                if (result.widened) continue;          // re-measure at the new width
+                if (!overflows()) break;
+                const after = measure();
+                // Only shrink the text when the window cannot grow any more.
+                if (result.height < result.available - 2) continue;
+                const next = Math.max(0.6, zoom * (window.innerHeight / after) * 0.98);
+                if (next >= zoom - 0.01) break;        // already at the minimum size
+                zoom = next;
+                setZoom(zoom);
+                await settle();
+            }
+            // Final pass: hug the content at its final text size, so there is
+            // no empty band under a shrunk answer.
+            if (run === fitRun && zoom < 1) {
+                const result = await window.electronAPI.fitLlmWindowToContent({ neededHeight: measure() });
+                if (result) await waitForSize(result);
+            }
+            scrollers().forEach(el => { el.scrollTop = 0; });
         }
 
         function setupScrolling() {

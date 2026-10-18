@@ -951,7 +951,13 @@
         messageDiv.appendChild(textDiv);
 
         chatMessages.appendChild(messageDiv);
-        chatMessages.scrollTop = chatMessages.scrollHeight;
+        // A long answer is shown from its first line (the sentence to say
+        // first), not scrolled to its end.
+        if (type === 'assistant' && messageDiv.offsetHeight > chatMessages.clientHeight) {
+          messageDiv.scrollIntoView({ block: 'start' });
+        } else {
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
 
         if (!skipPersist) {
           chatHistory.push({ kind: 'message', type, text });

@@ -454,6 +454,9 @@ class ApplicationController {
       "CommandOrControl+,": () => windowManager.showSettings(),
       "Alt+A": () => windowManager.toggleInteraction(),
       "Alt+R": () => this.toggleSpeechRecognition(),
+      // Scroll the answer window without the mouse.
+      "Alt+Down": () => this.scrollAnswer("down"),
+      "Alt+Up": () => this.scrollAnswer("up"),
       "CommandOrControl+Shift+T": () => windowManager.forceAlwaysOnTopForAllWindows(),
       "CommandOrControl+Shift+Alt+T": () => {
         const results = windowManager.testAlwaysOnTopForAllWindows();
@@ -1056,6 +1059,8 @@ class ApplicationController {
       return { success: true, contentMetrics };
     });
 
+    ipcMain.handle("fit-llm-window", (_event, metrics) => windowManager.fitLLMWindowToContent(metrics || {}));
+
     ipcMain.handle("resize-llm-window-for-content", (event, contentMetrics) => {
       // Use the same expansion logic for now, can be enhanced later
       windowManager.expandLLMWindow(contentMetrics);
@@ -1158,6 +1163,13 @@ class ApplicationController {
       logger.info("Session memory cleared via global shortcut");
     } catch (error) {
       logger.error("Error clearing session memory:", error);
+    }
+  }
+
+  scrollAnswer(direction) {
+    const answerWindow = windowManager.getWindow("llmResponse");
+    if (answerWindow && !answerWindow.isDestroyed()) {
+      answerWindow.webContents.send("scroll-answer", { direction });
     }
   }
 

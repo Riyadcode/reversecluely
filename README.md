@@ -60,6 +60,8 @@ If system audio is unavailable, arlclue shows a warning in the chat and falls ba
 
 ### Faster answers
 
+- The answer window sizes itself to the whole answer: it grows to the answer's measured height, widens for long answers, and only shrinks the text (never below 60%) when an answer is taller than the screen. It always opens on the first line; `Alt + ↓` / `Alt + ↑` scroll it if ever needed.
+
 - Answers start with one bold sentence you can say straight away, then a few bullet points for the follow-up "comment ?".
 - A fragment that is clearly a question is sent after 0.25 s instead of 0.8 s.
 - The Whisper model stays loaded for the whole listening session instead of unloading after a minute of silence.
@@ -101,6 +103,7 @@ See `env.example` for every option.
 | Start/stop listening | `Alt + R` |
 | Show/hide all windows | `Cmd/Ctrl + Shift + V` |
 | Toggle click-through | `Cmd/Ctrl + Shift + I` or `Alt + A` |
+| Scroll the answer window (no mouse) | `Alt + ↓` / `Alt + ↑` |
 | Open chat | `Cmd/Ctrl + Shift + C` |
 | Settings | `Cmd/Ctrl + ,` |
 
