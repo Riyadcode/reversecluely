@@ -146,7 +146,7 @@ const QUESTION_PHRASES = {
     'je voudrais connaître', 'je voudrais comprendre', 'je souhaiterais', 'dites-moi', 'dis-moi',
     'présentez-vous', 'présente-toi', 'racontez-moi', 'raconte-moi', 'expliquez-moi', 'explique-moi',
     'décrivez-moi', 'me parler de', 'me parliez', 'nous parliez', 'me parles', 'me dire', 'me décrire',
-    "m'expliquer", 'me présenter', 'vous présenter', 'donnez-moi un exemple', 'un exemple de',
+    "m'expliquer", 'donnez-moi un exemple',
     'vous pouvez me', 'tu peux me'
   ],
   ar: [
@@ -192,10 +192,14 @@ function isLikelyQuestion(text, language = null) {
 
   const lower = raw.toLowerCase().replace(/[’`]/g, "'");
   const words = lower.split(/\s+/).filter(Boolean);
-  // Two-word fragments like "okay so" are almost never a real interview question.
-  if (words.length < 3) {
+  // A single word is never a question without "?". Two-word fragments like
+  // "okay so" rarely are either, so the question-word check below needs
+  // three words; explicit requests ("Présentez-vous rapidement",
+  // "Introduce yourself") still count from two.
+  if (words.length < 2) {
     return false;
   }
+  const checkStarters = words.length >= 3;
 
   const languages = language && QUESTION_STARTERS[language]
     ? [language, ...Object.keys(QUESTION_STARTERS).filter((l) => l !== language)]
@@ -206,7 +210,7 @@ function isLikelyQuestion(text, language = null) {
   const sentences = lower.split(/[.!;:,،\n]+/).map((s) => s.trim()).filter(Boolean);
   const folded = foldForMatch(lower);
   for (const lang of languages) {
-    for (const sentence of sentences) {
+    for (const sentence of checkStarters ? sentences : []) {
       const startOf = sentence.replace(LEADING_FILLERS, '');
       if (QUESTION_STARTERS[lang].some((starter) => startsWithWord(startOf, starter))) {
         return true;

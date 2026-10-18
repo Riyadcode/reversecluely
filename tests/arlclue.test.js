@@ -477,3 +477,22 @@ test('Windows Whisper command: venv python first, no bogus script, errors not ta
   assert.ok(speech._probeWhisperCandidate({ command: helpful, baseArgs: [] }));
   speech.shutdown();
 });
+
+test("the candidate's own answer is not taken for a question", () => {
+  // Regression from a rehearsal: reading the suggested answer aloud
+  // ("…un plaisir de vous présenter mon parcours…") matched "vous présenter"
+  // and triggered a second answer.
+  const own = [
+    "Merci beaucoup, c'est un plaisir de vous présenter mon propos et ce qui amène aujourd'hui à poursuivre",
+    "Je vais vous présenter rapidement mon parcours",
+    "J'ai commencé par tout ce qui est comptabilité pure et",
+    "Je vous donne un exemple de projet que j'ai mené chez HPS"
+  ];
+  for (const text of own) {
+    assert.equal(language.isLikelyQuestion(text, 'fr'), false, text);
+  }
+  // The interviewer's versions still are.
+  assert.equal(language.isLikelyQuestion('Pouvez-vous vous présenter en quelques mots', 'fr'), true);
+  assert.equal(language.isLikelyQuestion('Présentez-vous rapidement', 'fr'), true);
+  assert.equal(language.isLikelyQuestion("Donnez-moi un exemple d'un projet difficile", 'fr'), true);
+});
