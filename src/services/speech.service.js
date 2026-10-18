@@ -800,6 +800,7 @@ class SpeechService extends EventEmitter {
    */
   _startAudioSources() {
     this._resetCaptureCheck();
+    this._segmentsThisSession = 0;
     const source = this.getAudioSource();
     this.useRendererCapture = this.usesRendererCapture();
     if (this.useRendererCapture) {
@@ -1006,6 +1007,7 @@ class SpeechService extends EventEmitter {
     this.vadPreRoll = [];            // ring of recent pre-speech chunks
     this.vadPreRollMs = 0;           // duration held in the pre-roll ring
     this.vadLastChunkAt = 0;         // timestamp of the last ingested chunk
+    this.vadSpeechPeak = 0;          // decaying peak energy of the current utterance
   }
 
   /**
@@ -1127,7 +1129,11 @@ class SpeechService extends EventEmitter {
     // Hysteresis: it takes more energy to *start* an utterance than to keep
     // one going, so a brief dip mid-sentence doesn't end it prematurely.
     const enterThreshold = Math.max(floor, this.vadNoiseFloor * 2.5);
-    const exitThreshold = Math.max(floor * 0.7, this.vadNoiseFloor * 1.6);
+    // A pause is also a clear drop relative to the voice itself (about
+    // -18 dB from its recent peak). With background music under the speech,
+    // as in many videos and some calls, the absolute level never falls below
+    // the floor and utterances only ended at the 15 s cap.
+    const exitThreshold = Math.max(floor * 0.7, this.vadNoiseFloor * 1.6, this.vadSpeechPeak * 0.125);
     const isVoiced = this.vadSpeaking ? energy >= exitThreshold : energy >= enterThreshold;
 
     if (!this.vadSpeaking) {
@@ -1136,6 +1142,7 @@ class SpeechService extends EventEmitter {
         this.vadSpeaking = true;
         this.vadSpeechMs = 0;
         this.vadSilenceMs = 0;
+        this.vadSpeechPeak = energy;
         for (const pre of this.vadPreRoll) {
           this.segmentBuffers.push(pre);
           this.segmentBytes += pre.length;
@@ -1166,6 +1173,7 @@ class SpeechService extends EventEmitter {
     if (isVoiced) {
       this.vadSpeechMs += chunkMs;
       this.vadSilenceMs = 0;
+      this.vadSpeechPeak = Math.max(energy, this.vadSpeechPeak * 0.98);
     } else {
       this.vadSilenceMs += chunkMs;
     }
@@ -2091,6 +2099,16 @@ class SpeechService extends EventEmitter {
     this.segmentBytes = 0;
 
     this.transcriptionInFlight = true;
+    // The first segments of a session are announced in the chat, so a
+    // rehearsal shows that speech is being cut and transcribed, and how long
+    // each step takes; later ones stay quiet to keep the chat readable.
+    this._segmentsThisSession = (this._segmentsThisSession || 0) + 1;
+    const announce = this._segmentsThisSession <= 3;
+    const seconds = (audioBuffer.length / 32000).toFixed(1);
+    const startedAt = Date.now();
+    if (announce) {
+      this.emit('warning', `Transcribing ${seconds} s of audio…`);
+    }
 
     try {
       const result = await this._transcribeWhisperBuffer(audioBuffer);
@@ -2100,6 +2118,17 @@ class SpeechService extends EventEmitter {
       } else if (clean) {
         logger.debug('Dropped likely Whisper silence hallucination', { transcript: clean });
       }
+      if (announce) {
+        const took = ((Date.now() - startedAt) / 1000).toFixed(1);
+        this.emit('warning', clean
+          ? `Whisper took ${took} s for ${seconds} s of audio.`
+          : `Whisper found no speech in ${seconds} s of audio (${took} s).`);
+      }
+    } catch (error) {
+      // Used to reach only the log file, so a broken Whisper looked like
+      // "it hears nothing".
+      this.emit('warning', `Whisper transcription failed: ${String(error.message || error).slice(0, 300)}`);
+      throw error;
     } finally {
       this.transcriptionInFlight = false;
 

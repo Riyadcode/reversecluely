@@ -797,6 +797,11 @@ class MainWindowUI {
      */
     _createAutoGain({ target = 0.06, maxGain = 40, gate = 0.0005 } = {}) {
         let gain = 1;
+        // Gain follows the level of the speech, not of each block: a slowly
+        // decaying peak of block levels. Driving it per block amplified the
+        // pauses between sentences up to speech level, so voice detection
+        // never saw the end of a sentence.
+        let speechLevel = 0;
         return (input) => {
             if (!input.length) {
                 return input;
@@ -804,9 +809,10 @@ class MainWindowUI {
             let sum = 0;
             for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
             const rms = Math.sqrt(sum / input.length);
-            if (rms > gate) {
-                const desired = Math.min(maxGain, Math.max(1, target / rms));
-                gain = desired < gain ? desired : gain + (desired - gain) * 0.15;
+            speechLevel = Math.max(rms, speechLevel * 0.995);
+            if (speechLevel > gate) {
+                const desired = Math.min(maxGain, Math.max(1, target / speechLevel));
+                gain = desired < gain ? desired : gain + (desired - gain) * 0.05;
             }
             const out = new Float32Array(input.length);
             for (let i = 0; i < input.length; i++) {
