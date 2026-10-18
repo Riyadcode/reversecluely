@@ -440,3 +440,40 @@ test('capture diagnostics flag a wrong audio rate and save a WAV sample', () => 
     speech.shutdown();
   }
 });
+
+test('Windows Whisper command: venv python first, no bogus script, errors not taken for help', () => {
+  // Regression from a Windows laptop: whisper.exe --help timed out (cold
+  // torch import), then `python ...\whisper.exe-script.py` was accepted
+  // because its "can't open file ...whisper..." error mentioned "whisper".
+  const speech = require('../src/services/speech.service');
+  const venv = tmpDir('arlclue-venv-');
+  const scripts = path.join(venv, '.venv-whisper', 'Scripts');
+  fs.mkdirSync(scripts, { recursive: true });
+  fs.writeFileSync(path.join(scripts, 'python.exe'), '');
+  fs.writeFileSync(path.join(scripts, 'whisper.exe'), '');
+
+  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  let candidates;
+  try {
+    candidates = speech._expandConfiguredWhisperCandidates(path.join(scripts, 'whisper.exe'));
+  } finally {
+    Object.defineProperty(process, 'platform', realPlatform);
+  }
+  assert.equal(candidates[0].command, path.join(scripts, 'python.exe'));
+  assert.deepEqual(candidates[0].baseArgs, ['-m', 'whisper']);
+  assert.ok(!candidates.some((c) => c.baseArgs.some((a) => /-script\.py$/.test(a))), 'no script.py when the file does not exist');
+
+  // A command whose only output is an error must not pass the probe...
+  const bin = tmpDir('arlclue-fakebin-');
+  const broken = path.join(bin, 'broken');
+  fs.writeFileSync(broken, "#!/bin/sh\necho \"python: can't open file '/x/whisper.exe-script.py': [Errno 2] No such file or directory\" >&2\nexit 2\n");
+  fs.chmodSync(broken, 0o755);
+  assert.equal(speech._probeWhisperCandidate({ command: broken, baseArgs: [] }), null);
+  // ...while real usage text with a non-zero exit still does.
+  const helpful = path.join(bin, 'helpful');
+  fs.writeFileSync(helpful, '#!/bin/sh\necho "usage: whisper [-h] audio [audio ...]"\nexit 1\n');
+  fs.chmodSync(helpful, 0o755);
+  assert.ok(speech._probeWhisperCandidate({ command: helpful, baseArgs: [] }));
+  speech.shutdown();
+});

@@ -1836,7 +1836,11 @@ class SpeechService extends EventEmitter {
 
     const output = `${probe.stdout || ''}\n${probe.stderr || ''}`;
     const noModule = output.includes('No module named whisper');
-    const isHelpOutput = output.includes('usage:') || output.includes('whisper') || output.includes('options');
+    // Real usage text only. Matching any output that mentions "whisper"
+    // accepted errors like "python: can't open file '...whisper.exe-script.py'"
+    // as a working command.
+    const looksLikeError = /can't open file|No such file|is not recognized|cannot find|Errno|Traceback/i.test(output);
+    const isHelpOutput = !looksLikeError && /usage:/i.test(output);
 
     if (!probe.error && probe.status === 0 && !noModule) {
       return candidate;
@@ -1872,6 +1876,23 @@ class SpeechService extends EventEmitter {
     // Normalize forward slashes to platform separator before trying anything
     const normalizedCmd = path.normalize(parsed.command);
 
+    // When the configured command lives in a virtualenv (setup.sh writes
+    // .venv-whisper/Scripts/whisper.exe), use that venv's python with
+    // `-m whisper` first. It is checked in under a second without importing
+    // torch, and it gives the persistent worker its python. Probing
+    // whisper.exe --help imports torch and can exceed the 30 s timeout on a
+    // laptop's first run, which left only broken fallbacks.
+    if (!parsed.baseArgs.includes('-m')) {
+      const pythonName = process.platform === 'win32' ? 'python.exe' : 'python';
+      const roots = [process.cwd(), path.resolve(__dirname, '..', '..')];
+      for (const root of roots) {
+        const venvPython = path.resolve(root, path.dirname(normalizedCmd), pythonName);
+        if (fs.existsSync(venvPython) && !candidates.some((c) => c.command === venvPython)) {
+          candidates.push({ command: venvPython, baseArgs: ['-m', 'whisper'], source: 'configured venv python -m whisper' });
+        }
+      }
+    }
+
     candidates.push({
       command: normalizedCmd,
       baseArgs: parsed.baseArgs,
@@ -1897,9 +1918,13 @@ class SpeechService extends EventEmitter {
           candidates.push({ command: `${resolvedPath}.exe`, baseArgs: parsed.baseArgs, source: 'configured (resolved .exe)' });
         }
       }
-      // Some Windows venvs create whisper-script.py alongside whisper.exe
-      const scriptPath = base + '-script.py';
-      candidates.push({ command: 'python', baseArgs: [scriptPath, ...parsed.baseArgs], source: 'configured (script.py)' });
+      // Some Windows venvs create whisper-script.py alongside whisper.exe.
+      // Strip the extension first (it used to look for whisper.exe-script.py)
+      // and only offer it when the file is really there.
+      const scriptPath = base.replace(/\.(exe|cmd|bat)$/i, '') + '-script.py';
+      if (fs.existsSync(path.resolve(scriptPath))) {
+        candidates.push({ command: 'python', baseArgs: [scriptPath, ...parsed.baseArgs], source: 'configured (script.py)' });
+      }
       // Try using the venv's own python with -m whisper
       const venvPython = path.join(path.dirname(base), 'python.exe');
       if (fs.existsSync(venvPython)) {
