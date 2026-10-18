@@ -400,3 +400,43 @@ test('Azure with several spoken languages uses the universal v2 endpoint (contin
     speech.shutdown();
   }
 });
+
+test('capture diagnostics flag a wrong audio rate and save a WAV sample', () => {
+  const speech = require('../src/services/speech.service');
+  const home = tmpDir('arlclue-home-');
+  const savedHome = process.env.HOME;
+  const savedNow = Date.now;
+  const warnings = [];
+  const onWarning = (message) => warnings.push(message);
+  speech.on('warning', onWarning);
+  try {
+    process.env.HOME = home;
+    let clock = 1000000;
+    Date.now = () => clock;
+    // 48 kHz audio sent as if it were 16 kHz: three times the bytes per second.
+    speech._resetCaptureCheck();
+    for (let i = 0; i < 44; i++) {
+      speech._checkCapturedAudio(Buffer.alloc(96000 / 4));   // 250 ms at 96 000 B/s
+      clock += 250;
+    }
+    const rate = warnings.map((w) => /about ([\d.]+) kHz instead of 16 kHz/.exec(w)).find(Boolean);
+    assert.ok(rate && Number(rate[1]) > 40, warnings.join(' | '));
+    const wav = path.join(home, '.arlclue', 'last-capture.wav');
+    assert.ok(fs.existsSync(wav), 'sample saved');
+    assert.equal(fs.readFileSync(wav).toString('ascii', 0, 4), 'RIFF');
+
+    // Correct 16 kHz audio: no rate warning.
+    warnings.length = 0;
+    speech._resetCaptureCheck();
+    for (let i = 0; i < 44; i++) {
+      speech._checkCapturedAudio(Buffer.alloc(8000));   // 250 ms at 32 000 B/s
+      clock += 250;
+    }
+    assert.ok(!warnings.some((w) => /instead of 16 kHz/.test(w)), warnings.join(' | '));
+  } finally {
+    Date.now = savedNow;
+    process.env.HOME = savedHome;
+    speech.removeListener('warning', onWarning);
+    speech.shutdown();
+  }
+});

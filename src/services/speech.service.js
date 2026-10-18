@@ -779,6 +779,7 @@ class SpeechService extends EventEmitter {
    * arecord/sox and system audio through the Pulse/PipeWire monitor.
    */
   _startAudioSources() {
+    this._resetCaptureCheck();
     const source = this.getAudioSource();
     this.useRendererCapture = this.usesRendererCapture();
     if (this.useRendererCapture) {
@@ -852,11 +853,59 @@ class SpeechService extends EventEmitter {
     }
   }
 
+  _resetCaptureCheck() {
+    this._captureCheck = { startedAt: 0, bytes: 0, reported: false, sample: [], sampleBytes: 0, saved: false };
+  }
+
+  /**
+   * Diagnostics on what the speech engine actually receives: the data rate
+   * (16 kHz mono 16-bit is 32 000 bytes/s; anything far off means the audio
+   * is sped up or slowed down and unintelligible), and the first 20 s saved
+   * as a WAV file the user can listen to.
+   */
+  _checkCapturedAudio(chunk) {
+    const check = this._captureCheck || (this._resetCaptureCheck(), this._captureCheck);
+    const now = Date.now();
+    if (!check.startedAt) {
+      check.startedAt = now;
+    }
+    check.bytes += chunk.length;
+
+    const elapsed = now - check.startedAt;
+    if (!check.reported && elapsed >= 10000) {
+      check.reported = true;
+      const bytesPerSecond = check.bytes / (elapsed / 1000);
+      const khz = bytesPerSecond / 2 / 1000;
+      logger.info('Captured audio rate', { bytesPerSecond: Math.round(bytesPerSecond), khz: khz.toFixed(1) });
+      if (bytesPerSecond < 26000 || bytesPerSecond > 38000) {
+        this.emit('warning', `Audio reaches the speech engine at about ${khz.toFixed(1)} kHz instead of 16 kHz, so it sounds sped up or slowed down. Restart listening; if it persists, report this message.`);
+      }
+    }
+
+    if (!check.saved) {
+      check.sample.push(Buffer.from(chunk));
+      check.sampleBytes += chunk.length;
+      if (check.sampleBytes >= 20 * 32000) {
+        check.saved = true;
+        const file = path.join(os.homedir(), '.arlclue', 'last-capture.wav');
+        try {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, this._createWavBuffer(Buffer.concat(check.sample, check.sampleBytes)));
+          this.emit('warning', `Saved the first 20 s of what the speech engine hears: ${file} (open it to check the sound).`);
+        } catch (error) {
+          logger.warn('Could not save the capture sample', { error: error.message });
+        }
+        check.sample = [];
+      }
+    }
+  }
+
   /** Single sink for captured audio, whichever backend produced it. */
   _handleMixedAudio(chunk) {
     if (!chunk || !chunk.length || !this.isRecording) {
       return;
     }
+    this._checkCapturedAudio(chunk);
     if (this.provider === 'azure' && this.pushStream) {
       try {
         this.pushStream.write(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.length));

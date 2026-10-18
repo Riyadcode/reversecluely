@@ -718,10 +718,14 @@ class MainWindowUI {
                 window.electronAPI.reportAudioWarning(`${warnings.join(' ')}${fallback}`);
             }
 
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)({
-                sampleRate: 16000
-            });
+            // Run at the device's own rate and convert to 16 kHz ourselves.
+            // Asking Web Audio for a 16 kHz context is not honoured on every
+            // machine; when it isn't, 48 kHz audio was sent as if it were
+            // 16 kHz (three times too slow) and the recogniser understood
+            // almost nothing.
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
             this._audioContext = audioContext;
+            const resampleTo16k = this._createResampler(audioContext.sampleRate, 16000);
 
             const bufferSize = 4096;
             const scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1);
@@ -742,13 +746,16 @@ class MainWindowUI {
                 analysers.push({ kind, analyser, peak: 0 });
                 return source;
             });
-            this._watchCaptureHealth(streams, analysers);
+            this._watchCaptureHealth(streams, analysers, audioContext.sampleRate);
 
             scriptNode.onaudioprocess = (event) => {
                 if (!this.isRecording || !window.electronAPI || !window.electronAPI.sendAudioChunk) {
                     return;
                 }
-                const inputData = event.inputBuffer.getChannelData(0);
+                const inputData = resampleTo16k(event.inputBuffer.getChannelData(0));
+                if (!inputData.length) {
+                    return;
+                }
                 const pcm16 = new Int16Array(inputData.length);
                 for (let i = 0; i < inputData.length; i++) {
                     const s = Math.max(-1, Math.min(1, inputData[i]));
@@ -779,11 +786,41 @@ class MainWindowUI {
     }
 
     /**
+     * Streaming down-sampler from the audio device rate to the 16 kHz the
+     * speech engines expect. Each output sample averages the input samples
+     * it covers (a simple anti-aliasing filter); the remainder of each block
+     * is carried into the next so there are no gaps between blocks.
+     */
+    _createResampler(fromRate, toRate) {
+        if (!fromRate || fromRate === toRate) {
+            return (input) => input;
+        }
+        const ratio = fromRate / toRate;
+        let carry = new Float32Array(0);
+        return (input) => {
+            const data = new Float32Array(carry.length + input.length);
+            data.set(carry);
+            data.set(input, carry.length);
+            const outLength = Math.floor(data.length / ratio);
+            const out = new Float32Array(outLength);
+            for (let i = 0; i < outLength; i++) {
+                const start = Math.floor(i * ratio);
+                const end = Math.max(start + 1, Math.min(data.length, Math.floor((i + 1) * ratio)));
+                let sum = 0;
+                for (let j = start; j < end; j++) sum += data[j];
+                out[i] = sum / (end - start);
+            }
+            carry = data.slice(Math.floor(outLength * ratio));
+            return out;
+        };
+    }
+
+    /**
      * Tell the user, in the chat, when a capture silently fails: the computer
      * audio track ends, or no sound at all arrives from it in the first
      * seconds. Without this, a dead loopback looked like "it can't hear".
      */
-    _watchCaptureHealth(streams, analysers) {
+    _watchCaptureHealth(streams, analysers, deviceRate = 16000) {
         const warn = (message) => {
             if (window.electronAPI && window.electronAPI.reportAudioWarning) {
                 window.electronAPI.reportAudioWarning(message);
@@ -826,7 +863,7 @@ class MainWindowUI {
                 if (system && system.peak < 0.002) {
                     warn('No sound received from the computer audio in 10 s. Check that the video or call is playing, and that your earphones are the default output device in Windows sound settings.');
                 } else if (system) {
-                    warn('Computer audio OK: sound is being received.');
+                    warn(`Computer audio OK: sound is being received (device ${Math.round(deviceRate / 100) / 10} kHz, converted to 16 kHz).`);
                 }
             }
         }, 500);
